@@ -75,10 +75,7 @@ def parse_invoice_text(text: str, filename: str | None = None) -> ParsedInvoiceD
     total_currency, total_amount = parse_total_amount(lines)
     parsed.total_amount = total_amount
 
-    tax_currency, tax_amount = parse_labeled_amount(
-        lines,
-        labels=["tax", "vat", "sales tax", "gst"],
-    )
+    tax_currency, tax_amount = parse_tax_amount(normalized_text, lines)
     parsed.tax_amount = tax_amount
 
     parsed.currency = parse_currency(normalized_text, [total_currency, tax_currency])
@@ -132,12 +129,47 @@ def parse_labeled_date(text: str, labels: list[str]) -> date | None:
 def parse_labeled_amount(lines: list[str], labels: list[str]) -> tuple[str | None, Decimal | None]:
     for line in lines:
         low = line.lower()
+        if is_excluded_tax_line(low):
+            continue
         if not any(label in low for label in labels):
             continue
         parsed = parse_amount_with_currency(line)
         if parsed is not None:
             return parsed
     return None, None
+
+
+def parse_tax_amount(text: str, lines: list[str]) -> tuple[str | None, Decimal | None]:
+    compact_text = re.sub(r"\s+", " ", text)
+
+    gst_total_match = re.search(r"\btotal\s+(?:sg\s+)?gst\s+amount\b", compact_text, flags=re.IGNORECASE)
+    if gst_total_match:
+        lookahead = compact_text[gst_total_match.end() : gst_total_match.end() + 100]
+        parsed = parse_amount_with_currency(lookahead)
+        if parsed is not None and parsed[0] == "USD":
+            return parsed
+
+    gst_line_matches = re.findall(
+        r"\bsg\s+gst\s+usd\s*([0-9][0-9,]*(?:\.[0-9]{2})?)",
+        compact_text,
+        flags=re.IGNORECASE,
+    )
+    if gst_line_matches:
+        gst_total = Decimal("0.00")
+        for raw_value in gst_line_matches:
+            value = parse_decimal(raw_value)
+            if value is not None:
+                gst_total += value
+        return "USD", gst_total.quantize(Decimal("0.01"))
+
+    return parse_labeled_amount(
+        lines,
+        labels=["tax", "vat", "sales tax", "gst"],
+    )
+
+
+def is_excluded_tax_line(low_line: str) -> bool:
+    return "excl" in low_line and "tax" in low_line
 
 
 def parse_total_amount(lines: list[str]) -> tuple[str | None, Decimal | None]:

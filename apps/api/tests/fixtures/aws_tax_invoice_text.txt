@@ -4,4 +4,10 @@ Tax Invoice Date: January 1, 2026
 TOTAL AMOUNT DUE ON January 15, 2026
 USD 1,282.37
 This Tax Invoice is for the billing period December 1 - December 31, 2025
+Usage charges excl. Tax) USD 1,176.49
+SG GST USD 11.82
+SG GST USD 15.63
+SG GST USD 78.43
+Total SG GST Amou
+nt USD 105.88
 console.aws.amazon.com

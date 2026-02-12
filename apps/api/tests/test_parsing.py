@@ -50,4 +50,5 @@ def test_parse_invoice_text_aws_tax_invoice_fixture():
     assert parsed.total_amount == Decimal("1282.37")
     assert parsed.billing_period_start == date(2025, 12, 1)
     assert parsed.billing_period_end == date(2025, 12, 31)
-    assert parsed.tax_amount is None
+    assert parsed.tax_amount == Decimal("105.88")
+    assert parsed.tax_amount != Decimal("1176.49")
