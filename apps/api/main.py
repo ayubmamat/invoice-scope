@@ -1,6 +1,6 @@
 from collections import defaultdict
 from collections.abc import Generator
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from hashlib import sha256
 import os
@@ -45,6 +45,40 @@ class MonthlyReportResponse(BaseModel):
     grand_totals: list[CurrencyGrandTotal]
 
 
+class SpendGroupComparison(BaseModel):
+    vendor: str
+    currency: str | None
+    invoice_count: int
+    total_amount_sum: float
+    tax_amount_sum: float
+    prev_total_amount_sum: float | None
+    prev_tax_amount_sum: float | None
+    delta_total_amount: float
+    delta_tax_amount: float
+    pct_total_amount_change: float | None
+    pct_tax_amount_change: float | None
+
+
+class CurrencyGrandTotalComparison(BaseModel):
+    currency: str | None
+    invoice_count: int
+    total_amount_sum: float
+    tax_amount_sum: float
+    prev_total_amount_sum: float | None
+    prev_tax_amount_sum: float | None
+    delta_total_amount: float
+    delta_tax_amount: float
+    pct_total_amount_change: float | None
+    pct_tax_amount_change: float | None
+
+
+class MonthlyMoMReportResponse(BaseModel):
+    current: MonthlyReportResponse
+    previous: MonthlyReportResponse
+    groups: list[SpendGroupComparison]
+    grand_totals: list[CurrencyGrandTotalComparison]
+
+
 class VendorSpendGroup(BaseModel):
     vendor: str
     currency: str | None
@@ -70,6 +104,83 @@ def get_storage_dir() -> Path:
 
 def decimal_to_float(value: Decimal | None) -> float:
     return float(value or 0)
+
+
+def month_bounds(year: int, month: int) -> tuple[date, date]:
+    month_start = date(year, month, 1)
+    month_end = date(year + (month // 12), (month % 12) + 1, 1)
+    return month_start, month_end
+
+
+def previous_year_month(year: int, month: int) -> tuple[int, int]:
+    if month == 1:
+        return year - 1, 12
+    return year, month - 1
+
+
+def _pct_change(current: Decimal, previous: Decimal | None) -> float | None:
+    if previous is None or previous == 0:
+        return None
+    return float(((current - previous) / previous) * Decimal("100"))
+
+
+def build_monthly_report(year: int, month: int, db: Session) -> MonthlyReportResponse:
+    month_start, month_end = month_bounds(year, month)
+
+    overlapping_billing_period = and_(
+        or_(Invoice.billing_period_start.is_not(None), Invoice.billing_period_end.is_not(None)),
+        or_(Invoice.billing_period_start.is_(None), Invoice.billing_period_start < month_end),
+        or_(Invoice.billing_period_end.is_(None), Invoice.billing_period_end >= month_start),
+    )
+    invoice_date_fallback = and_(
+        Invoice.billing_period_start.is_(None),
+        Invoice.billing_period_end.is_(None),
+        Invoice.invoice_date.is_not(None),
+        Invoice.invoice_date >= month_start,
+        Invoice.invoice_date < month_end,
+    )
+
+    invoices = db.scalars(select(Invoice).where(or_(overlapping_billing_period, invoice_date_fallback))).all()
+
+    grouped: dict[tuple[str, str | None], dict[str, Decimal | int]] = {}
+    grand_totals: dict[str | None, dict[str, Decimal | int]] = defaultdict(
+        lambda: {"invoice_count": 0, "total_amount_sum": Decimal("0"), "tax_amount_sum": Decimal("0")}
+    )
+
+    for invoice in invoices:
+        key = (invoice.vendor, invoice.currency)
+        if key not in grouped:
+            grouped[key] = {"invoice_count": 0, "total_amount_sum": Decimal("0"), "tax_amount_sum": Decimal("0")}
+
+        grouped[key]["invoice_count"] += 1
+        grouped[key]["total_amount_sum"] += invoice.total_amount or Decimal("0")
+        grouped[key]["tax_amount_sum"] += invoice.tax_amount or Decimal("0")
+
+        grand = grand_totals[invoice.currency]
+        grand["invoice_count"] += 1
+        grand["total_amount_sum"] += invoice.total_amount or Decimal("0")
+        grand["tax_amount_sum"] += invoice.tax_amount or Decimal("0")
+
+    groups = [
+        SpendGroup(
+            vendor=vendor,
+            currency=currency,
+            invoice_count=int(values["invoice_count"]),
+            total_amount_sum=decimal_to_float(values["total_amount_sum"]),
+            tax_amount_sum=decimal_to_float(values["tax_amount_sum"]),
+        )
+        for (vendor, currency), values in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1] or ""))
+    ]
+    grand_total_items = [
+        CurrencyGrandTotal(
+            currency=currency,
+            invoice_count=int(values["invoice_count"]),
+            total_amount_sum=decimal_to_float(values["total_amount_sum"]),
+            tax_amount_sum=decimal_to_float(values["tax_amount_sum"]),
+        )
+        for currency, values in sorted(grand_totals.items(), key=lambda item: item[0] or "")
+    ]
+    return MonthlyReportResponse(year=year, month=month, groups=groups, grand_totals=grand_total_items)
 
 
 def invoice_to_dict(invoice: Invoice) -> dict:
@@ -204,63 +315,139 @@ def get_monthly_report(
     month: int = Query(..., ge=1, le=12),
     db: Session = Depends(get_db),
 ) -> MonthlyReportResponse:
-    month_start = date(year, month, 1)
-    month_end = date(year + (month // 12), (month % 12) + 1, 1)
+    return build_monthly_report(year=year, month=month, db=db)
 
-    overlapping_billing_period = and_(
-        or_(Invoice.billing_period_start.is_not(None), Invoice.billing_period_end.is_not(None)),
-        or_(Invoice.billing_period_start.is_(None), Invoice.billing_period_start < month_end),
-        or_(Invoice.billing_period_end.is_(None), Invoice.billing_period_end >= month_start),
-    )
-    invoice_date_fallback = and_(
-        Invoice.billing_period_start.is_(None),
-        Invoice.billing_period_end.is_(None),
-        Invoice.invoice_date.is_not(None),
-        Invoice.invoice_date >= month_start,
-        Invoice.invoice_date < month_end,
-    )
 
-    invoices = db.scalars(select(Invoice).where(or_(overlapping_billing_period, invoice_date_fallback))).all()
+@app.get("/reports/monthly/mom", response_model=MonthlyMoMReportResponse)
+def get_monthly_mom_report(
+    year: int = Query(..., ge=1, le=9999),
+    month: int = Query(..., ge=1, le=12),
+    db: Session = Depends(get_db),
+) -> MonthlyMoMReportResponse:
+    previous_year, previous_month = previous_year_month(year, month)
 
-    grouped: dict[tuple[str, str | None], dict[str, Decimal | int]] = {}
-    grand_totals: dict[str | None, dict[str, Decimal | int]] = defaultdict(
-        lambda: {"invoice_count": 0, "total_amount_sum": Decimal("0"), "tax_amount_sum": Decimal("0")}
-    )
+    current_report = build_monthly_report(year=year, month=month, db=db)
+    previous_report = build_monthly_report(year=previous_year, month=previous_month, db=db)
 
-    for invoice in invoices:
-        key = (invoice.vendor, invoice.currency)
-        if key not in grouped:
-            grouped[key] = {"invoice_count": 0, "total_amount_sum": Decimal("0"), "tax_amount_sum": Decimal("0")}
+    current_groups = {(group.vendor, group.currency): group for group in current_report.groups}
+    previous_groups = {(group.vendor, group.currency): group for group in previous_report.groups}
+    all_group_keys = sorted(set(current_groups.keys()) | set(previous_groups.keys()), key=lambda item: (item[0], item[1] or ""))
 
-        grouped[key]["invoice_count"] += 1
-        grouped[key]["total_amount_sum"] += invoice.total_amount or Decimal("0")
-        grouped[key]["tax_amount_sum"] += invoice.tax_amount or Decimal("0")
+    groups: list[SpendGroupComparison] = []
+    for key in all_group_keys:
+        vendor, currency = key
+        current_group = current_groups.get(key)
+        previous_group = previous_groups.get(key)
 
-        grand = grand_totals[invoice.currency]
-        grand["invoice_count"] += 1
-        grand["total_amount_sum"] += invoice.total_amount or Decimal("0")
-        grand["tax_amount_sum"] += invoice.tax_amount or Decimal("0")
+        current_total = Decimal(str(current_group.total_amount_sum)) if current_group else Decimal("0")
+        current_tax = Decimal(str(current_group.tax_amount_sum)) if current_group else Decimal("0")
+        previous_total = Decimal(str(previous_group.total_amount_sum)) if previous_group else None
+        previous_tax = Decimal(str(previous_group.tax_amount_sum)) if previous_group else None
 
-    groups = [
-        SpendGroup(
-            vendor=vendor,
-            currency=currency,
-            invoice_count=int(values["invoice_count"]),
-            total_amount_sum=decimal_to_float(values["total_amount_sum"]),
-            tax_amount_sum=decimal_to_float(values["tax_amount_sum"]),
+        groups.append(
+            SpendGroupComparison(
+                vendor=vendor,
+                currency=currency,
+                invoice_count=current_group.invoice_count if current_group else 0,
+                total_amount_sum=float(current_total),
+                tax_amount_sum=float(current_tax),
+                prev_total_amount_sum=float(previous_total) if previous_total is not None else None,
+                prev_tax_amount_sum=float(previous_tax) if previous_tax is not None else None,
+                delta_total_amount=float(current_total - (previous_total or Decimal("0"))),
+                delta_tax_amount=float(current_tax - (previous_tax or Decimal("0"))),
+                pct_total_amount_change=_pct_change(current_total, previous_total),
+                pct_tax_amount_change=_pct_change(current_tax, previous_tax),
+            )
         )
-        for (vendor, currency), values in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1] or ""))
-    ]
-    grand_total_items = [
-        CurrencyGrandTotal(
-            currency=currency,
-            invoice_count=int(values["invoice_count"]),
-            total_amount_sum=decimal_to_float(values["total_amount_sum"]),
-            tax_amount_sum=decimal_to_float(values["tax_amount_sum"]),
+
+    current_grand_totals = {item.currency: item for item in current_report.grand_totals}
+    previous_grand_totals = {item.currency: item for item in previous_report.grand_totals}
+    all_currencies = sorted(set(current_grand_totals.keys()) | set(previous_grand_totals.keys()), key=lambda item: item or "")
+
+    grand_totals: list[CurrencyGrandTotalComparison] = []
+    for currency in all_currencies:
+        current_grand = current_grand_totals.get(currency)
+        previous_grand = previous_grand_totals.get(currency)
+
+        current_total = Decimal(str(current_grand.total_amount_sum)) if current_grand else Decimal("0")
+        current_tax = Decimal(str(current_grand.tax_amount_sum)) if current_grand else Decimal("0")
+        previous_total = Decimal(str(previous_grand.total_amount_sum)) if previous_grand else None
+        previous_tax = Decimal(str(previous_grand.tax_amount_sum)) if previous_grand else None
+
+        grand_totals.append(
+            CurrencyGrandTotalComparison(
+                currency=currency,
+                invoice_count=current_grand.invoice_count if current_grand else 0,
+                total_amount_sum=float(current_total),
+                tax_amount_sum=float(current_tax),
+                prev_total_amount_sum=float(previous_total) if previous_total is not None else None,
+                prev_tax_amount_sum=float(previous_tax) if previous_tax is not None else None,
+                delta_total_amount=float(current_total - (previous_total or Decimal("0"))),
+                delta_tax_amount=float(current_tax - (previous_tax or Decimal("0"))),
+                pct_total_amount_change=_pct_change(current_total, previous_total),
+                pct_tax_amount_change=_pct_change(current_tax, previous_tax),
+            )
         )
-        for currency, values in sorted(grand_totals.items(), key=lambda item: item[0] or "")
+
+    return MonthlyMoMReportResponse(
+        current=current_report,
+        previous=previous_report,
+        groups=groups,
+        grand_totals=grand_totals,
+    )
+
+
+@app.post("/dev/seed")
+def seed_dev_data(db: Session = Depends(get_db)) -> dict[str, int | str]:
+    if os.getenv("ENV") != "dev":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    current_start, current_end = month_bounds(date.today().year, date.today().month)
+    previous_year, previous_month = previous_year_month(date.today().year, date.today().month)
+    prev_start, prev_end = month_bounds(previous_year, previous_month)
+
+    seed_specs = [
+        {
+            "month_start": prev_start,
+            "month_end": prev_end,
+            "total_amount": Decimal("1000.00"),
+            "tax_amount": Decimal("80.00"),
+            "file_hash": f"dev-seed-aws-{prev_start.year:04d}{prev_start.month:02d}",
+        },
+        {
+            "month_start": current_start,
+            "month_end": current_end,
+            "total_amount": Decimal("1282.37"),
+            "tax_amount": Decimal("105.88"),
+            "file_hash": f"dev-seed-aws-{current_start.year:04d}{current_start.month:02d}",
+        },
     ]
-    return MonthlyReportResponse(year=year, month=month, groups=groups, grand_totals=grand_total_items)
+
+    created = 0
+    reused = 0
+    for spec in seed_specs:
+        existing = db.scalar(select(Invoice).where(Invoice.file_hash == spec["file_hash"]))
+        if existing is not None:
+            reused += 1
+            continue
+
+        invoice = Invoice(
+            vendor="AWS",
+            currency="USD",
+            billing_period_start=spec["month_start"],
+            billing_period_end=spec["month_end"] - timedelta(days=1),
+            invoice_date=spec["month_end"] - timedelta(days=1),
+            total_amount=spec["total_amount"],
+            tax_amount=spec["tax_amount"],
+            source=InvoiceSource.UPLOAD,
+            file_path=f"/dev/seed/{spec['file_hash']}.pdf",
+            file_hash=spec["file_hash"],
+        )
+        db.add(invoice)
+        created += 1
+
+    db.commit()
+    return {"status": "ok", "created": created, "reused": reused}
 
 
 @app.get("/reports/vendors", response_model=VendorReportResponse)
