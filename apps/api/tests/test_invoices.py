@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 pytest.importorskip("multipart")
 
 from app.models import Base, Invoice, InvoiceSource
-from main import get_invoice, list_invoices, upload_invoice
+from main import get_invoice, get_invoice_text, list_invoices, upload_invoice
 
 
 @pytest.fixture
@@ -52,6 +52,22 @@ def test_upload_invoice_and_list(db_session: Session, tmp_path: Path, monkeypatc
     invoice = get_invoice(result["id"], db_session)
     assert invoice["id"] == result["id"]
 
+
+
+
+def test_get_invoice_text_returns_empty_when_extraction_unavailable(db_session: Session, tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("INVOICE_STORAGE_DIR", str(tmp_path / "invoices"))
+    result = asyncio.run(
+        upload_invoice(
+            file=build_upload_file("invoice.pdf", b"%PDF-1.4 test", "application/pdf"),
+            source="upload",
+            vendor="Acme",
+            db=db_session,
+        )
+    )
+
+    response = get_invoice_text(result["id"], db_session)
+    assert response["text"] == ""
 
 def test_upload_dedup_returns_409(db_session: Session, tmp_path: Path, monkeypatch):
     from fastapi import HTTPException
