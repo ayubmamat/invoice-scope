@@ -1,0 +1,8 @@
+Acme Cloud Services
+Invoice Number: INV-2025-0042
+Invoice Date: 2025-01-15
+Billing Period: 2024-12-01 to 2024-12-31
+Currency: USD
+Subtotal 1000.00
+Tax 80.00
+Total Amount USD 1080.00

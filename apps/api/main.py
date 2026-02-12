@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.models import Invoice, InvoiceSource
+from app.parsing import extract_pdf_text, parse_invoice_text
 
 app = FastAPI(title="InvoiceScope API")
 
@@ -28,6 +29,10 @@ def get_db() -> Generator[Session, None, None]:
 
 def get_storage_dir() -> Path:
     return Path(os.getenv("INVOICE_STORAGE_DIR", "/data/invoices"))
+
+
+def get_text_sidecar_path(file_path: str) -> Path:
+    return Path(file_path).with_suffix(".txt")
 
 
 def invoice_to_dict(invoice: Invoice) -> dict:
@@ -97,8 +102,22 @@ async def upload_invoice(
     file_path = storage_dir / f"{uuid4()}.pdf"
     file_path.write_bytes(content)
 
+    extracted_text = extract_pdf_text(file_path)
+    text_path = get_text_sidecar_path(str(file_path))
+    text_path.write_text(extracted_text, encoding="utf-8")
+
+    parsed = parse_invoice_text(extracted_text, filename=file.filename)
+    resolved_vendor = (vendor or "").strip() or parsed.vendor or "unknown"
+
     invoice = Invoice(
-        vendor=(vendor or "unknown").strip() or "unknown",
+        vendor=resolved_vendor,
+        invoice_number=parsed.invoice_number,
+        billing_period_start=parsed.billing_period_start,
+        billing_period_end=parsed.billing_period_end,
+        invoice_date=parsed.invoice_date,
+        currency=parsed.currency,
+        total_amount=parsed.total_amount,
+        tax_amount=parsed.tax_amount,
         source=normalized_source,
         file_path=str(file_path),
         file_hash=file_hash,
@@ -133,3 +152,16 @@ def get_invoice(invoice_id: int, db: Session = Depends(get_db)) -> dict:
     if invoice is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
     return invoice_to_dict(invoice)
+
+
+@app.get("/invoices/{invoice_id}/text")
+def get_invoice_text(invoice_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+
+    text_path = get_text_sidecar_path(invoice.file_path)
+    if not text_path.exists():
+        return {"text": ""}
+
+    return {"text": text_path.read_text(encoding="utf-8")[:5000]}

@@ -5,3 +5,4 @@ psycopg[binary]==3.2.5
 alembic==1.14.1
 python-multipart==0.0.20
 pytest==8.3.4
+pypdf==5.2.0
