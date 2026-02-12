@@ -18,6 +18,7 @@ from main import (
     get_invoice_text,
     get_monthly_mom_report,
     get_monthly_report,
+    get_trend_report,
     previous_year_month,
     seed_dev_data,
     get_vendor_report,
@@ -549,3 +550,267 @@ def test_dev_seed_endpoint_enforced_and_seeds_data(db_session: Session, monkeypa
     aws_currency_total = next(total for total in payload["grand_totals"] if total["currency"] == "USD")
     assert aws_currency_total["prev_tax_amount_sum"] == 80.0
     assert aws_currency_total["tax_amount_sum"] == 105.88
+
+
+def test_trend_report_month_bucketing_and_zero_fill(db_session: Session, monkeypatch):
+    class FrozenDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return cls(2025, 12, 20)
+
+    monkeypatch.setattr("main.date", FrozenDate)
+
+    db_session.add_all(
+        [
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 12, 1),
+                billing_period_end=date(2025, 12, 31),
+                invoice_date=date(2025, 12, 31),
+                currency="USD",
+                total_amount=Decimal("1282.37"),
+                tax_amount=Decimal("105.88"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-dec.pdf",
+                file_hash="hash-trend-aws-dec",
+            ),
+            Invoice(
+                vendor="Cloudflare",
+                billing_period_start=date(2025, 10, 1),
+                billing_period_end=date(2025, 10, 31),
+                invoice_date=date(2025, 10, 31),
+                currency="USD",
+                total_amount=Decimal("40.00"),
+                tax_amount=Decimal("4.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/cloudflare-oct.pdf",
+                file_hash="hash-trend-cloudflare-oct",
+            ),
+            Invoice(
+                vendor="Stripe",
+                billing_period_start=None,
+                billing_period_end=None,
+                invoice_date=date(2025, 11, 15),
+                currency="EUR",
+                total_amount=Decimal("70.00"),
+                tax_amount=Decimal("7.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/stripe-nov.pdf",
+                file_hash="hash-trend-stripe-nov",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    report = get_trend_report(months=3, db=db_session)
+    assert [point.model_dump() for point in report.months] == [
+        {
+            "year": 2025,
+            "month": 10,
+            "currency": "EUR",
+            "invoice_count": 0,
+            "total_amount_sum": 0.0,
+            "tax_amount_sum": 0.0,
+        },
+        {
+            "year": 2025,
+            "month": 10,
+            "currency": "USD",
+            "invoice_count": 1,
+            "total_amount_sum": 40.0,
+            "tax_amount_sum": 4.0,
+        },
+        {
+            "year": 2025,
+            "month": 11,
+            "currency": "EUR",
+            "invoice_count": 1,
+            "total_amount_sum": 70.0,
+            "tax_amount_sum": 7.0,
+        },
+        {
+            "year": 2025,
+            "month": 11,
+            "currency": "USD",
+            "invoice_count": 0,
+            "total_amount_sum": 0.0,
+            "tax_amount_sum": 0.0,
+        },
+        {
+            "year": 2025,
+            "month": 12,
+            "currency": "EUR",
+            "invoice_count": 0,
+            "total_amount_sum": 0.0,
+            "tax_amount_sum": 0.0,
+        },
+        {
+            "year": 2025,
+            "month": 12,
+            "currency": "USD",
+            "invoice_count": 1,
+            "total_amount_sum": 1282.37,
+            "tax_amount_sum": 105.88,
+        },
+    ]
+
+
+def test_trend_report_filters_vendor_and_currency(db_session: Session, monkeypatch):
+    class FrozenDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return cls(2025, 12, 5)
+
+    monkeypatch.setattr("main.date", FrozenDate)
+
+    db_session.add_all(
+        [
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 12, 1),
+                billing_period_end=date(2025, 12, 31),
+                invoice_date=date(2025, 12, 31),
+                currency="USD",
+                total_amount=Decimal("1282.37"),
+                tax_amount=Decimal("105.88"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-dec-filter.pdf",
+                file_hash="hash-trend-filter-aws-dec",
+            ),
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 11, 1),
+                billing_period_end=date(2025, 11, 30),
+                invoice_date=date(2025, 11, 30),
+                currency="USD",
+                total_amount=Decimal("100.00"),
+                tax_amount=Decimal("8.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-nov-filter.pdf",
+                file_hash="hash-trend-filter-aws-nov",
+            ),
+            Invoice(
+                vendor="Stripe",
+                billing_period_start=date(2025, 12, 1),
+                billing_period_end=date(2025, 12, 31),
+                invoice_date=date(2025, 12, 31),
+                currency="EUR",
+                total_amount=Decimal("55.00"),
+                tax_amount=Decimal("5.50"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/stripe-dec-filter.pdf",
+                file_hash="hash-trend-filter-stripe-dec",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    vendor_filtered = get_trend_report(months=3, vendor="AWS", db=db_session)
+    assert [point.model_dump() for point in vendor_filtered.months] == [
+        {
+            "year": 2025,
+            "month": 10,
+            "currency": "USD",
+            "invoice_count": 0,
+            "total_amount_sum": 0.0,
+            "tax_amount_sum": 0.0,
+        },
+        {
+            "year": 2025,
+            "month": 11,
+            "currency": "USD",
+            "invoice_count": 1,
+            "total_amount_sum": 100.0,
+            "tax_amount_sum": 8.0,
+        },
+        {
+            "year": 2025,
+            "month": 12,
+            "currency": "USD",
+            "invoice_count": 1,
+            "total_amount_sum": 1282.37,
+            "tax_amount_sum": 105.88,
+        },
+    ]
+
+    currency_filtered = get_trend_report(months=3, currency="EUR", db=db_session)
+    assert [point.model_dump() for point in currency_filtered.months] == [
+        {
+            "year": 2025,
+            "month": 10,
+            "currency": "EUR",
+            "invoice_count": 0,
+            "total_amount_sum": 0.0,
+            "tax_amount_sum": 0.0,
+        },
+        {
+            "year": 2025,
+            "month": 11,
+            "currency": "EUR",
+            "invoice_count": 0,
+            "total_amount_sum": 0.0,
+            "tax_amount_sum": 0.0,
+        },
+        {
+            "year": 2025,
+            "month": 12,
+            "currency": "EUR",
+            "invoice_count": 1,
+            "total_amount_sum": 55.0,
+            "tax_amount_sum": 5.5,
+        },
+    ]
+
+
+def test_trend_report_acceptance_current_aws_invoice_returns_prior_zero_months(db_session: Session, monkeypatch):
+    class FrozenDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return cls(2025, 12, 31)
+
+    monkeypatch.setattr("main.date", FrozenDate)
+
+    db_session.add(
+        Invoice(
+            vendor="AWS",
+            billing_period_start=date(2025, 12, 1),
+            billing_period_end=date(2025, 12, 31),
+            invoice_date=date(2025, 12, 31),
+            currency="USD",
+            total_amount=Decimal("1282.37"),
+            tax_amount=Decimal("105.88"),
+            source=InvoiceSource.UPLOAD,
+            file_path="/tmp/aws-dec-acceptance.pdf",
+            file_hash="hash-trend-acceptance-aws-dec",
+        )
+    )
+    db_session.commit()
+
+    report = get_trend_report(months=3, db=db_session)
+
+    assert [point.model_dump() for point in report.months] == [
+        {
+            "year": 2025,
+            "month": 10,
+            "currency": "USD",
+            "invoice_count": 0,
+            "total_amount_sum": 0.0,
+            "tax_amount_sum": 0.0,
+        },
+        {
+            "year": 2025,
+            "month": 11,
+            "currency": "USD",
+            "invoice_count": 0,
+            "total_amount_sum": 0.0,
+            "tax_amount_sum": 0.0,
+        },
+        {
+            "year": 2025,
+            "month": 12,
+            "currency": "USD",
+            "invoice_count": 1,
+            "total_amount_sum": 1282.37,
+            "tax_amount_sum": 105.88,
+        },
+    ]
