@@ -18,6 +18,7 @@ from main import (
     get_invoice_text,
     get_monthly_mom_report,
     get_monthly_report,
+    get_anomalies_report,
     get_trend_report,
     previous_year_month,
     seed_dev_data,
@@ -862,3 +863,124 @@ def test_trend_report_anchor_validation(db_session: Session):
         get_trend_report(months=3, anchor_year=2025, anchor_month=13, db=db_session)
     assert invalid_anchor_month.value.status_code == 422
     assert "between 1 and 12" in invalid_anchor_month.value.detail
+
+
+def test_anomalies_report_returns_empty_list_when_no_anomalies(db_session: Session):
+    db_session.add_all(
+        [
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 11, 1),
+                billing_period_end=date(2025, 11, 30),
+                invoice_date=date(2025, 11, 30),
+                currency="USD",
+                total_amount=Decimal("100.00"),
+                tax_amount=Decimal("8.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/anomalies-empty-aws-prev.pdf",
+                file_hash="hash-anomalies-empty-aws-prev",
+            ),
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 12, 1),
+                billing_period_end=date(2025, 12, 31),
+                invoice_date=date(2025, 12, 31),
+                currency="USD",
+                total_amount=Decimal("110.00"),
+                tax_amount=Decimal("8.80"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/anomalies-empty-aws-current.pdf",
+                file_hash="hash-anomalies-empty-aws-current",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    report = get_anomalies_report(year=2025, month=12, db=db_session)
+
+    assert report.year == 2025
+    assert report.month == 12
+    assert report.anomalies == []
+
+
+def test_anomalies_report_detects_spike_new_vendor_and_data_quality(db_session: Session):
+    db_session.add_all(
+        [
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 11, 1),
+                billing_period_end=date(2025, 11, 30),
+                invoice_date=date(2025, 11, 30),
+                currency="USD",
+                total_amount=Decimal("1000.00"),
+                tax_amount=Decimal("80.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/anomalies-aws-prev.pdf",
+                file_hash="hash-anomalies-aws-prev",
+            ),
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 12, 1),
+                billing_period_end=date(2025, 12, 31),
+                invoice_date=date(2025, 12, 31),
+                currency="USD",
+                total_amount=Decimal("1400.00"),
+                tax_amount=Decimal("100.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/anomalies-aws-current.pdf",
+                file_hash="hash-anomalies-aws-current",
+            ),
+            Invoice(
+                vendor="Cloudflare",
+                billing_period_start=date(2025, 12, 1),
+                billing_period_end=date(2025, 12, 31),
+                invoice_date=date(2025, 12, 31),
+                currency="USD",
+                total_amount=Decimal("250.00"),
+                tax_amount=Decimal("25.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/anomalies-cloudflare-current.pdf",
+                file_hash="hash-anomalies-cloudflare-current",
+            ),
+            Invoice(
+                vendor="Datadog",
+                billing_period_start=date(2025, 12, 1),
+                billing_period_end=date(2025, 12, 31),
+                invoice_date=date(2025, 12, 31),
+                currency="USD",
+                total_amount=None,
+                tax_amount=Decimal("5.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/anomalies-datadog-current.pdf",
+                file_hash="hash-anomalies-datadog-current",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    report = get_anomalies_report(year=2025, month=12, db=db_session)
+    payload = [anomaly.model_dump() for anomaly in report.anomalies]
+
+    assert {item["type"] for item in payload} == {"spend_spike", "new_vendor", "data_quality"}
+
+    aws_spike = next(item for item in payload if item.get("type") == "spend_spike" and item.get("vendor") == "AWS")
+    assert aws_spike == {
+        "type": "spend_spike",
+        "vendor": "AWS",
+        "currency": "USD",
+        "current_total": 1400.0,
+        "previous_total": 1000.0,
+        "delta": 400.0,
+        "pct_change": 40.0,
+    }
+
+    new_vendor = next(item for item in payload if item.get("type") == "new_vendor" and item.get("vendor") == "Cloudflare")
+    assert new_vendor == {
+        "type": "new_vendor",
+        "vendor": "Cloudflare",
+        "currency": "USD",
+        "current_total": 250.0,
+    }
+
+    data_quality = next(item for item in payload if item.get("type") == "data_quality")
+    assert data_quality["issue"] == "missing_total_amount"
