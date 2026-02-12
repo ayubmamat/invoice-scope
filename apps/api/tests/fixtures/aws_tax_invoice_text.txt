@@ -1,0 +1,7 @@
+Amazon Web Services Singapore Private Limited
+Tax Invoice Number: SGIN26-10731
+Tax Invoice Date: January 1, 2026
+TOTAL AMOUNT DUE ON January 15, 2026
+USD 1,282.37
+This Tax Invoice is for the billing period December 1 - December 31, 2025
+console.aws.amazon.com
