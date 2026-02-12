@@ -29,7 +29,11 @@ class Invoice(Base):
     total_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     tax_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     source: Mapped[InvoiceSource] = mapped_column(
-        Enum(InvoiceSource, name="invoice_source"),
+        Enum(
+            InvoiceSource,
+            name="invoice_source",
+            values_callable=lambda enum_cls: [item.value for item in enum_cls],
+        ),
         nullable=False,
         default=InvoiceSource.UPLOAD,
     )

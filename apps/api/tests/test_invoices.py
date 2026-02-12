@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 pytest.importorskip("multipart")
 
-from app.models import Base, InvoiceSource
+from app.models import Base, Invoice, InvoiceSource
 from main import get_invoice, list_invoices, upload_invoice
 
 
@@ -35,7 +35,7 @@ def test_upload_invoice_and_list(db_session: Session, tmp_path: Path, monkeypatc
     result = asyncio.run(
         upload_invoice(
             file=build_upload_file("invoice.pdf", b"%PDF-1.4 test", "application/pdf"),
-            source=InvoiceSource.UPLOAD,
+            source="upload",
             vendor="Acme",
             db=db_session,
         )
@@ -62,7 +62,7 @@ def test_upload_dedup_returns_409(db_session: Session, tmp_path: Path, monkeypat
     first = asyncio.run(
         upload_invoice(
             file=build_upload_file("duplicate.pdf", payload, "application/pdf"),
-            source=InvoiceSource.UPLOAD,
+            source="upload",
             vendor=None,
             db=db_session,
         )
@@ -72,7 +72,7 @@ def test_upload_dedup_returns_409(db_session: Session, tmp_path: Path, monkeypat
         asyncio.run(
             upload_invoice(
                 file=build_upload_file("duplicate.pdf", payload, "application/pdf"),
-                source=InvoiceSource.UPLOAD,
+                source="upload",
                 vendor=None,
                 db=db_session,
             )
@@ -80,3 +80,40 @@ def test_upload_dedup_returns_409(db_session: Session, tmp_path: Path, monkeypat
 
     assert exc.value.status_code == 409
     assert exc.value.detail["invoice_id"] == first["id"]
+
+
+def test_upload_source_normalized_to_lowercase(db_session: Session, tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("INVOICE_STORAGE_DIR", str(tmp_path / "invoices"))
+    result = asyncio.run(
+        upload_invoice(
+            file=build_upload_file("invoice.pdf", b"%PDF-1.4 test", "application/pdf"),
+            source="UPLOAD",
+            vendor="Acme",
+            db=db_session,
+        )
+    )
+
+    assert result["source"] == "upload"
+
+    stored_invoice = db_session.get(Invoice, result["id"])
+    assert stored_invoice is not None
+    assert stored_invoice.source == InvoiceSource.UPLOAD
+
+
+def test_upload_invalid_source_returns_422(db_session: Session, tmp_path: Path, monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setenv("INVOICE_STORAGE_DIR", str(tmp_path / "invoices"))
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            upload_invoice(
+                file=build_upload_file("invoice.pdf", b"%PDF-1.4 test", "application/pdf"),
+                source="ftp",
+                vendor="Acme",
+                db=db_session,
+            )
+        )
+
+    assert exc.value.status_code == 422
+    assert "Allowed values: upload, email" in exc.value.detail

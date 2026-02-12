@@ -54,6 +54,17 @@ def is_pdf_upload(file: UploadFile) -> bool:
     return file.content_type in PDF_CONTENT_TYPES or filename.endswith(".pdf")
 
 
+def normalize_invoice_source(source: str) -> InvoiceSource:
+    normalized_source = source.strip().lower()
+    try:
+        return InvoiceSource(normalized_source)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid source '{source}'. Allowed values: upload, email.",
+        ) from exc
+
+
 @app.get("/health")
 def health_check(_: Session = Depends(get_db)) -> dict[str, str]:
     return {"status": "ok"}
@@ -62,10 +73,12 @@ def health_check(_: Session = Depends(get_db)) -> dict[str, str]:
 @app.post("/invoices/upload", status_code=status.HTTP_201_CREATED)
 async def upload_invoice(
     file: UploadFile = File(...),
-    source: InvoiceSource = Form(default=InvoiceSource.UPLOAD),
+    source: str = Form(default=InvoiceSource.UPLOAD.value),
     vendor: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ) -> dict:
+    normalized_source = normalize_invoice_source(source)
+
     if not is_pdf_upload(file):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only PDF files are supported")
 
@@ -86,7 +99,7 @@ async def upload_invoice(
 
     invoice = Invoice(
         vendor=(vendor or "unknown").strip() or "unknown",
-        source=source,
+        source=normalized_source,
         file_path=str(file_path),
         file_hash=file_hash,
     )
