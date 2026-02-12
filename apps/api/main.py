@@ -31,10 +31,6 @@ def get_storage_dir() -> Path:
     return Path(os.getenv("INVOICE_STORAGE_DIR", "/data/invoices"))
 
 
-def get_text_sidecar_path(file_path: str) -> Path:
-    return Path(file_path).with_suffix(".txt")
-
-
 def invoice_to_dict(invoice: Invoice) -> dict:
     return {
         "id": invoice.id,
@@ -103,9 +99,6 @@ async def upload_invoice(
     file_path.write_bytes(content)
 
     extracted_text = extract_pdf_text(file_path)
-    text_path = get_text_sidecar_path(str(file_path))
-    text_path.write_text(extracted_text, encoding="utf-8")
-
     parsed = parse_invoice_text(extracted_text, filename=file.filename)
     resolved_vendor = (vendor or "").strip() or parsed.vendor or "unknown"
 
@@ -121,6 +114,7 @@ async def upload_invoice(
         source=normalized_source,
         file_path=str(file_path),
         file_hash=file_hash,
+        extracted_text=extracted_text or None,
     )
 
     db.add(invoice)
@@ -155,13 +149,9 @@ def get_invoice(invoice_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/invoices/{invoice_id}/text")
-def get_invoice_text(invoice_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
+def get_invoice_text(invoice_id: int, db: Session = Depends(get_db)) -> dict[str, int | str]:
     invoice = db.get(Invoice, invoice_id)
     if invoice is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
 
-    text_path = get_text_sidecar_path(invoice.file_path)
-    if not text_path.exists():
-        return {"text": ""}
-
-    return {"text": text_path.read_text(encoding="utf-8")[:5000]}
+    return {"id": invoice.id, "text": (invoice.extracted_text or "")[:5000]}
