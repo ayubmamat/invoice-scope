@@ -1,4 +1,6 @@
 import asyncio
+from datetime import date
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 
@@ -10,7 +12,14 @@ from sqlalchemy.orm import Session, sessionmaker
 pytest.importorskip("multipart")
 
 from app.models import Base, Invoice, InvoiceSource
-from main import get_invoice, get_invoice_text, list_invoices, upload_invoice
+from main import (
+    get_invoice,
+    get_invoice_text,
+    get_monthly_report,
+    get_vendor_report,
+    list_invoices,
+    upload_invoice,
+)
 
 
 def build_pdf_with_text(text: str) -> bytes:
@@ -152,3 +161,148 @@ def test_upload_invalid_source_returns_422(db_session: Session, tmp_path: Path, 
 
     assert exc.value.status_code == 422
     assert "Allowed values: upload, email" in exc.value.detail
+
+
+def test_monthly_report_overlapping_billing_period_and_invoice_date_fallback(db_session: Session):
+    db_session.add_all(
+        [
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 12, 1),
+                billing_period_end=date(2025, 12, 31),
+                invoice_date=date(2025, 12, 31),
+                currency="USD",
+                total_amount=Decimal("100.00"),
+                tax_amount=Decimal("10.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-dec.pdf",
+                file_hash="hash-aws-dec",
+            ),
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 11, 15),
+                billing_period_end=date(2025, 12, 15),
+                invoice_date=date(2025, 12, 15),
+                currency="USD",
+                total_amount=Decimal("40.00"),
+                tax_amount=Decimal("4.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-overlap.pdf",
+                file_hash="hash-aws-overlap",
+            ),
+            Invoice(
+                vendor="Stripe",
+                invoice_date=date(2025, 12, 20),
+                currency="EUR",
+                total_amount=Decimal("80.00"),
+                tax_amount=Decimal("8.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/stripe-dec.pdf",
+                file_hash="hash-stripe-dec",
+            ),
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2026, 1, 1),
+                billing_period_end=date(2026, 1, 31),
+                invoice_date=date(2026, 1, 31),
+                currency="USD",
+                total_amount=Decimal("999.00"),
+                tax_amount=Decimal("99.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-jan.pdf",
+                file_hash="hash-aws-jan",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    report = get_monthly_report(year=2025, month=12, db=db_session)
+
+    assert report.year == 2025
+    assert report.month == 12
+    assert [group.model_dump() for group in report.groups] == [
+        {
+            "vendor": "AWS",
+            "currency": "USD",
+            "invoice_count": 2,
+            "total_amount_sum": 140.0,
+            "tax_amount_sum": 14.0,
+        },
+        {
+            "vendor": "Stripe",
+            "currency": "EUR",
+            "invoice_count": 1,
+            "total_amount_sum": 80.0,
+            "tax_amount_sum": 8.0,
+        },
+    ]
+    assert [total.model_dump() for total in report.grand_totals] == [
+        {
+            "currency": "EUR",
+            "invoice_count": 1,
+            "total_amount_sum": 80.0,
+            "tax_amount_sum": 8.0,
+        },
+        {
+            "currency": "USD",
+            "invoice_count": 2,
+            "total_amount_sum": 140.0,
+            "tax_amount_sum": 14.0,
+        },
+    ]
+
+
+def test_vendor_report_lifetime_grouped_by_vendor_and_currency(db_session: Session):
+    db_session.add_all(
+        [
+            Invoice(
+                vendor="AWS",
+                invoice_date=date(2025, 12, 1),
+                currency="USD",
+                total_amount=Decimal("100.00"),
+                tax_amount=Decimal("10.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-1.pdf",
+                file_hash="hash-vendor-1",
+            ),
+            Invoice(
+                vendor="AWS",
+                invoice_date=date(2025, 12, 2),
+                currency="USD",
+                total_amount=Decimal("50.00"),
+                tax_amount=Decimal("5.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-2.pdf",
+                file_hash="hash-vendor-2",
+            ),
+            Invoice(
+                vendor="AWS",
+                invoice_date=date(2025, 12, 3),
+                currency="EUR",
+                total_amount=Decimal("70.00"),
+                tax_amount=Decimal("7.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-3.pdf",
+                file_hash="hash-vendor-3",
+            ),
+            Invoice(
+                vendor="Stripe",
+                invoice_date=date(2025, 12, 4),
+                currency="USD",
+                total_amount=Decimal("20.00"),
+                tax_amount=Decimal("2.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/stripe-1.pdf",
+                file_hash="hash-vendor-4",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    report = get_vendor_report(db_session)
+
+    assert [vendor.model_dump() for vendor in report.vendors] == [
+        {"vendor": "AWS", "currency": "EUR", "invoice_count": 1, "total_amount_sum": 70.0},
+        {"vendor": "AWS", "currency": "USD", "invoice_count": 2, "total_amount_sum": 150.0},
+        {"vendor": "Stripe", "currency": "USD", "invoice_count": 1, "total_amount_sum": 20.0},
+    ]
