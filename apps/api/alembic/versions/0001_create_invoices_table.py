@@ -21,7 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    invoice_source = postgresql.ENUM("upload", "email", name="invoice_source")
+    invoice_source = postgresql.ENUM("upload", "email", name="invoice_source", create_type=False)
     invoice_source.create(op.get_bind(), checkfirst=True)
 
     op.create_table(
