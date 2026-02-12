@@ -10,6 +10,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -20,7 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    invoice_source = sa.Enum("upload", "email", name="invoice_source")
+    invoice_source = postgresql.ENUM("upload", "email", name="invoice_source")
     invoice_source.create(op.get_bind(), checkfirst=True)
 
     op.create_table(
@@ -48,4 +49,4 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index(op.f("ix_invoices_id"), table_name="invoices")
     op.drop_table("invoices")
-    sa.Enum("upload", "email", name="invoice_source").drop(op.get_bind(), checkfirst=True)
+    postgresql.ENUM("upload", "email", name="invoice_source").drop(op.get_bind(), checkfirst=True)
