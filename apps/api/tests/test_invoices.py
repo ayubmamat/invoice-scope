@@ -13,6 +13,22 @@ from app.models import Base, Invoice, InvoiceSource
 from main import get_invoice, get_invoice_text, list_invoices, upload_invoice
 
 
+def build_pdf_with_text(text: str) -> bytes:
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, NameObject
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=200)
+    stream = DecodedStreamObject()
+    escaped_text = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    stream.set_data(f"BT /F1 12 Tf 20 120 Td ({escaped_text}) Tj ET".encode("utf-8"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+
+    pdf = BytesIO()
+    writer.write(pdf)
+    return pdf.getvalue()
+
+
 @pytest.fixture
 def db_session(tmp_path: Path):
     db_path = tmp_path / "test.db"
@@ -55,11 +71,12 @@ def test_upload_invoice_and_list(db_session: Session, tmp_path: Path, monkeypatc
 
 
 
-def test_get_invoice_text_returns_empty_when_extraction_unavailable(db_session: Session, tmp_path: Path, monkeypatch):
+def test_get_invoice_text_returns_extracted_text(db_session: Session, tmp_path: Path, monkeypatch):
     monkeypatch.setenv("INVOICE_STORAGE_DIR", str(tmp_path / "invoices"))
+    payload = build_pdf_with_text("InvoiceScope PDF extraction check")
     result = asyncio.run(
         upload_invoice(
-            file=build_upload_file("invoice.pdf", b"%PDF-1.4 test", "application/pdf"),
+            file=build_upload_file("invoice.pdf", payload, "application/pdf"),
             source="upload",
             vendor="Acme",
             db=db_session,
@@ -67,7 +84,9 @@ def test_get_invoice_text_returns_empty_when_extraction_unavailable(db_session: 
     )
 
     response = get_invoice_text(result["id"], db_session)
-    assert response["text"] == ""
+    assert response["id"] == result["id"]
+    assert response["text"]
+    assert "InvoiceScope PDF extraction check" in response["text"]
 
 def test_upload_dedup_returns_409(db_session: Session, tmp_path: Path, monkeypatch):
     from fastapi import HTTPException
