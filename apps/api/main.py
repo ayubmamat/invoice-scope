@@ -309,6 +309,38 @@ def get_invoice_text(invoice_id: int, db: Session = Depends(get_db)) -> dict[str
     return {"id": invoice.id, "text": (invoice.extracted_text or "")[:5000]}
 
 
+@app.post("/invoices/{invoice_id}/parse")
+def parse_existing_invoice(
+    invoice_id: int,
+    force_text: bool = False,
+    db: Session = Depends(get_db),
+) -> dict:
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+
+    should_extract_text = force_text or not (invoice.extracted_text or "").strip()
+    extracted_text = invoice.extracted_text or ""
+    if should_extract_text:
+        extracted_text = extract_pdf_text(Path(invoice.file_path))
+
+    parsed = parse_invoice_text(extracted_text)
+
+    invoice.extracted_text = extracted_text or None
+    invoice.vendor = parsed.vendor or "unknown"
+    invoice.invoice_number = parsed.invoice_number
+    invoice.billing_period_start = parsed.billing_period_start
+    invoice.billing_period_end = parsed.billing_period_end
+    invoice.invoice_date = parsed.invoice_date
+    invoice.currency = parsed.currency
+    invoice.total_amount = parsed.total_amount
+    invoice.tax_amount = parsed.tax_amount
+
+    db.commit()
+    db.refresh(invoice)
+    return invoice_to_dict(invoice)
+
+
 @app.get("/reports/monthly", response_model=MonthlyReportResponse)
 def get_monthly_report(
     year: int = Query(..., ge=1, le=9999),
