@@ -90,6 +90,19 @@ class VendorReportResponse(BaseModel):
     vendors: list[VendorSpendGroup]
 
 
+class TrendMonthPoint(BaseModel):
+    year: int
+    month: int
+    currency: str | None
+    invoice_count: int
+    total_amount_sum: float
+    tax_amount_sum: float
+
+
+class TrendReportResponse(BaseModel):
+    months: list[TrendMonthPoint]
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
@@ -116,6 +129,16 @@ def previous_year_month(year: int, month: int) -> tuple[int, int]:
     if month == 1:
         return year - 1, 12
     return year, month - 1
+
+
+def iter_recent_months(*, ending_year: int, ending_month: int, months: int) -> list[tuple[int, int]]:
+    year = ending_year
+    month = ending_month
+    values: list[tuple[int, int]] = []
+    for _ in range(months):
+        values.append((year, month))
+        year, month = previous_year_month(year, month)
+    return list(reversed(values))
 
 
 def _pct_change(current: Decimal, previous: Decimal | None) -> float | None:
@@ -504,3 +527,91 @@ def get_vendor_report(db: Session = Depends(get_db)) -> VendorReportResponse:
         for (vendor, currency), values in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1] or ""))
     ]
     return VendorReportResponse(vendors=vendors)
+
+
+@app.get("/reports/trend", response_model=TrendReportResponse)
+def get_trend_report(
+    months: int = Query(default=6, ge=1, le=24),
+    vendor: str | None = None,
+    currency: str | None = None,
+    db: Session = Depends(get_db),
+) -> TrendReportResponse:
+    today = date.today()
+    month_keys = iter_recent_months(ending_year=today.year, ending_month=today.month, months=months)
+    first_year, first_month = month_keys[0]
+    last_year, last_month = month_keys[-1]
+    range_start, _ = month_bounds(first_year, first_month)
+    _, range_end = month_bounds(last_year, last_month)
+
+    filters = [
+        or_(
+            and_(
+                Invoice.billing_period_start.is_not(None),
+                Invoice.billing_period_start >= range_start,
+                Invoice.billing_period_start < range_end,
+            ),
+            and_(
+                Invoice.billing_period_start.is_(None),
+                Invoice.invoice_date.is_not(None),
+                Invoice.invoice_date >= range_start,
+                Invoice.invoice_date < range_end,
+            ),
+        )
+    ]
+    if vendor is not None:
+        filters.append(Invoice.vendor == vendor)
+    if currency is not None:
+        filters.append(Invoice.currency == currency)
+
+    invoices = db.scalars(select(Invoice).where(*filters)).all()
+
+    grouped: dict[tuple[int, int, str | None], dict[str, Decimal | int]] = defaultdict(
+        lambda: {"invoice_count": 0, "total_amount_sum": Decimal("0"), "tax_amount_sum": Decimal("0")}
+    )
+    currencies_seen: set[str | None] = set()
+
+    for invoice in invoices:
+        bucket_date = invoice.billing_period_start or invoice.invoice_date
+        if bucket_date is None:
+            continue
+
+        key = (bucket_date.year, bucket_date.month, invoice.currency)
+        grouped[key]["invoice_count"] += 1
+        grouped[key]["total_amount_sum"] += invoice.total_amount or Decimal("0")
+        grouped[key]["tax_amount_sum"] += invoice.tax_amount or Decimal("0")
+        currencies_seen.add(invoice.currency)
+
+    if currency is not None:
+        currencies = [currency]
+    else:
+        currencies = sorted(currencies_seen, key=lambda value: value or "")
+
+    points: list[TrendMonthPoint] = []
+    for year, month in month_keys:
+        if not currencies:
+            points.append(
+                TrendMonthPoint(
+                    year=year,
+                    month=month,
+                    currency=currency,
+                    invoice_count=0,
+                    total_amount_sum=0,
+                    tax_amount_sum=0,
+                )
+            )
+            continue
+
+        for month_currency in currencies:
+            values = grouped[(year, month, month_currency)]
+            points.append(
+                TrendMonthPoint(
+                    year=year,
+                    month=month,
+                    currency=month_currency,
+                    invoice_count=int(values["invoice_count"]),
+                    total_amount_sum=decimal_to_float(values["total_amount_sum"]),
+                    tax_amount_sum=decimal_to_float(values["tax_amount_sum"]),
+                )
+            )
+
+    return TrendReportResponse(months=points)
