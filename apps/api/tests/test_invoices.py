@@ -13,6 +13,7 @@ pytest.importorskip("multipart")
 
 from app.models import Base, Invoice, InvoiceSource
 from main import (
+    parse_existing_invoice,
     get_invoice,
     get_invoice_text,
     get_monthly_mom_report,
@@ -127,6 +128,84 @@ def test_upload_dedup_returns_409(db_session: Session, tmp_path: Path, monkeypat
 
     assert exc.value.status_code == 409
     assert exc.value.detail["invoice_id"] == first["id"]
+
+
+def test_reparse_updates_null_fields(db_session: Session, tmp_path: Path, monkeypatch):
+    invoice_pdf = tmp_path / "aws.pdf"
+    invoice_pdf.write_bytes(b"%PDF-1.4")
+
+    invoice = Invoice(
+        vendor="unknown",
+        invoice_number=None,
+        billing_period_start=None,
+        billing_period_end=None,
+        invoice_date=None,
+        currency=None,
+        total_amount=None,
+        tax_amount=None,
+        source=InvoiceSource.UPLOAD,
+        file_path=str(invoice_pdf),
+        file_hash="hash-reparse-null",
+        extracted_text=None,
+    )
+    db_session.add(invoice)
+    db_session.commit()
+    db_session.refresh(invoice)
+
+    aws_text = Path("apps/api/tests/fixtures/aws_tax_invoice_text.txt").read_text()
+
+    def fake_extract_pdf_text(file_path: Path) -> str:
+        assert file_path == invoice_pdf
+        return aws_text
+
+    monkeypatch.setattr("main.extract_pdf_text", fake_extract_pdf_text)
+
+    response = parse_existing_invoice(invoice.id, db=db_session)
+
+    assert response["vendor"] == "AWS"
+    assert response["currency"] == "USD"
+    assert response["total_amount"] == 1282.37
+    assert response["tax_amount"] == 105.88
+    assert response["billing_period_start"] == date(2025, 12, 1)
+    assert response["billing_period_end"] == date(2025, 12, 31)
+
+
+def test_reparse_idempotent(db_session: Session, tmp_path: Path, monkeypatch):
+    invoice_pdf = tmp_path / "aws.pdf"
+    invoice_pdf.write_bytes(b"%PDF-1.4")
+    aws_text = Path("apps/api/tests/fixtures/aws_tax_invoice_text.txt").read_text()
+
+    invoice = Invoice(
+        vendor="unknown",
+        invoice_number=None,
+        billing_period_start=None,
+        billing_period_end=None,
+        invoice_date=None,
+        currency=None,
+        total_amount=None,
+        tax_amount=None,
+        source=InvoiceSource.UPLOAD,
+        file_path=str(invoice_pdf),
+        file_hash="hash-reparse-idempotent",
+        extracted_text=aws_text,
+    )
+    db_session.add(invoice)
+    db_session.commit()
+    db_session.refresh(invoice)
+
+    def fail_if_called(_: Path) -> str:
+        raise AssertionError("extract_pdf_text should not be called when extracted_text is already present")
+
+    monkeypatch.setattr("main.extract_pdf_text", fail_if_called)
+
+    first = parse_existing_invoice(invoice.id, db=db_session)
+    second = parse_existing_invoice(invoice.id, db=db_session)
+
+    assert first["vendor"] == "AWS"
+    assert second["vendor"] == "AWS"
+    assert first["currency"] == second["currency"] == "USD"
+    assert first["total_amount"] == second["total_amount"] == 1282.37
+    assert first["tax_amount"] == second["tax_amount"] == 105.88
 
 
 def test_upload_source_normalized_to_lowercase(db_session: Session, tmp_path: Path, monkeypatch):
