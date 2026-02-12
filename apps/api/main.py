@@ -104,6 +104,35 @@ class TrendReportResponse(BaseModel):
     months: list[TrendMonthPoint]
 
 
+class SpendSpikeAnomaly(BaseModel):
+    type: str = "spend_spike"
+    vendor: str
+    currency: str | None
+    current_total: float
+    previous_total: float
+    delta: float
+    pct_change: float
+
+
+class NewVendorAnomaly(BaseModel):
+    type: str = "new_vendor"
+    vendor: str
+    currency: str | None
+    current_total: float
+
+
+class DataQualityAnomaly(BaseModel):
+    type: str = "data_quality"
+    invoice_id: int
+    issue: str
+
+
+class AnomaliesReportResponse(BaseModel):
+    year: int
+    month: int
+    anomalies: list[SpendSpikeAnomaly | NewVendorAnomaly | DataQualityAnomaly]
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
@@ -153,7 +182,7 @@ def _pct_change(current: Decimal, previous: Decimal | None) -> float | None:
     return float(((current - previous) / previous) * Decimal("100"))
 
 
-def build_monthly_report(year: int, month: int, db: Session) -> MonthlyReportResponse:
+def month_invoice_filter(year: int, month: int):
     month_start, month_end = month_bounds(year, month)
 
     overlapping_billing_period = and_(
@@ -169,7 +198,15 @@ def build_monthly_report(year: int, month: int, db: Session) -> MonthlyReportRes
         Invoice.invoice_date < month_end,
     )
 
-    invoices = db.scalars(select(Invoice).where(or_(overlapping_billing_period, invoice_date_fallback))).all()
+    return or_(overlapping_billing_period, invoice_date_fallback)
+
+
+def get_month_invoices(year: int, month: int, db: Session) -> list[Invoice]:
+    return db.scalars(select(Invoice).where(month_invoice_filter(year, month))).all()
+
+
+def build_monthly_report(year: int, month: int, db: Session) -> MonthlyReportResponse:
+    invoices = get_month_invoices(year, month, db)
 
     grouped: dict[tuple[str, str | None], dict[str, Decimal | int]] = {}
     grand_totals: dict[str | None, dict[str, Decimal | int]] = defaultdict(
@@ -456,6 +493,66 @@ def get_monthly_mom_report(
         groups=groups,
         grand_totals=grand_totals,
     )
+
+
+@app.get("/reports/anomalies", response_model=AnomaliesReportResponse)
+def get_anomalies_report(
+    year: int = Query(..., ge=1, le=9999),
+    month: int = Query(..., ge=1, le=12),
+    db: Session = Depends(get_db),
+) -> AnomaliesReportResponse:
+    previous_year, previous_month = previous_year_month(year, month)
+
+    current_report = build_monthly_report(year=year, month=month, db=db)
+    previous_report = build_monthly_report(year=previous_year, month=previous_month, db=db)
+
+    current_groups = {(group.vendor, group.currency): group for group in current_report.groups}
+    previous_groups = {(group.vendor, group.currency): group for group in previous_report.groups}
+
+    anomalies: list[SpendSpikeAnomaly | NewVendorAnomaly | DataQualityAnomaly] = []
+
+    for key in sorted(current_groups.keys(), key=lambda item: (item[0], item[1] or "")):
+        current_group = current_groups[key]
+        previous_group = previous_groups.get(key)
+
+        current_total = Decimal(str(current_group.total_amount_sum))
+        if previous_group is None:
+            anomalies.append(
+                NewVendorAnomaly(
+                    vendor=current_group.vendor,
+                    currency=current_group.currency,
+                    current_total=current_group.total_amount_sum,
+                )
+            )
+            continue
+
+        previous_total = Decimal(str(previous_group.total_amount_sum))
+        if previous_total <= 0:
+            continue
+
+        delta = current_total - previous_total
+        pct_change = (delta / previous_total) * Decimal("100")
+        if pct_change >= Decimal("30"):
+            anomalies.append(
+                SpendSpikeAnomaly(
+                    vendor=current_group.vendor,
+                    currency=current_group.currency,
+                    current_total=current_group.total_amount_sum,
+                    previous_total=previous_group.total_amount_sum,
+                    delta=decimal_to_float(delta),
+                    pct_change=decimal_to_float(pct_change),
+                )
+            )
+
+    for invoice in get_month_invoices(year, month, db):
+        if invoice.total_amount is None:
+            anomalies.append(DataQualityAnomaly(invoice_id=invoice.id, issue="missing_total_amount"))
+        if invoice.currency is None:
+            anomalies.append(DataQualityAnomaly(invoice_id=invoice.id, issue="missing_currency"))
+        if invoice.invoice_date is None:
+            anomalies.append(DataQualityAnomaly(invoice_id=invoice.id, issue="missing_invoice_date"))
+
+    return AnomaliesReportResponse(year=year, month=month, anomalies=anomalies)
 
 
 @app.post("/dev/seed")
