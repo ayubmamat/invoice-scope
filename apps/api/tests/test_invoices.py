@@ -553,12 +553,7 @@ def test_dev_seed_endpoint_enforced_and_seeds_data(db_session: Session, monkeypa
 
 
 def test_trend_report_month_bucketing_and_zero_fill(db_session: Session, monkeypatch):
-    class FrozenDate(date):
-        @classmethod
-        def today(cls) -> date:
-            return cls(2025, 12, 20)
-
-    monkeypatch.setattr("main.date", FrozenDate)
+    monkeypatch.setattr("main.current_utc_year_month", lambda: (2025, 12))
 
     db_session.add_all(
         [
@@ -656,12 +651,7 @@ def test_trend_report_month_bucketing_and_zero_fill(db_session: Session, monkeyp
 
 
 def test_trend_report_filters_vendor_and_currency(db_session: Session, monkeypatch):
-    class FrozenDate(date):
-        @classmethod
-        def today(cls) -> date:
-            return cls(2025, 12, 5)
-
-    monkeypatch.setattr("main.date", FrozenDate)
+    monkeypatch.setattr("main.current_utc_year_month", lambda: (2025, 12))
 
     db_session.add_all(
         [
@@ -763,12 +753,7 @@ def test_trend_report_filters_vendor_and_currency(db_session: Session, monkeypat
 
 
 def test_trend_report_acceptance_current_aws_invoice_returns_prior_zero_months(db_session: Session, monkeypatch):
-    class FrozenDate(date):
-        @classmethod
-        def today(cls) -> date:
-            return cls(2025, 12, 31)
-
-    monkeypatch.setattr("main.date", FrozenDate)
+    monkeypatch.setattr("main.current_utc_year_month", lambda: (2025, 12))
 
     db_session.add(
         Invoice(
@@ -814,3 +799,66 @@ def test_trend_report_acceptance_current_aws_invoice_returns_prior_zero_months(d
             "tax_amount_sum": 105.88,
         },
     ]
+
+
+def test_trend_report_anchor_month_generates_expected_window(db_session: Session):
+    db_session.add_all(
+        [
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 12, 1),
+                billing_period_end=date(2025, 12, 31),
+                invoice_date=date(2025, 12, 31),
+                currency="USD",
+                total_amount=Decimal("1282.37"),
+                tax_amount=Decimal("105.88"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-dec-anchor.pdf",
+                file_hash="hash-trend-anchor-aws-dec",
+            )
+        ]
+    )
+    db_session.commit()
+
+    report = get_trend_report(months=3, anchor_year=2025, anchor_month=12, db=db_session)
+
+    assert [point.model_dump() for point in report.months] == [
+        {
+            "year": 2025,
+            "month": 10,
+            "currency": "USD",
+            "invoice_count": 0,
+            "total_amount_sum": 0.0,
+            "tax_amount_sum": 0.0,
+        },
+        {
+            "year": 2025,
+            "month": 11,
+            "currency": "USD",
+            "invoice_count": 0,
+            "total_amount_sum": 0.0,
+            "tax_amount_sum": 0.0,
+        },
+        {
+            "year": 2025,
+            "month": 12,
+            "currency": "USD",
+            "invoice_count": 1,
+            "total_amount_sum": 1282.37,
+            "tax_amount_sum": 105.88,
+        },
+    ]
+
+
+def test_trend_report_anchor_validation(db_session: Session):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as missing_anchor:
+        get_trend_report(months=3, anchor_year=2025, db=db_session)
+    assert missing_anchor.value.status_code == 422
+    assert "provided together" in missing_anchor.value.detail
+
+    with pytest.raises(HTTPException) as invalid_anchor_month:
+        get_trend_report(months=3, anchor_year=2025, anchor_month=13, db=db_session)
+    assert invalid_anchor_month.value.status_code == 422
+    assert "between 1 and 12" in invalid_anchor_month.value.detail

@@ -1,9 +1,10 @@
 from collections import defaultdict
 from collections.abc import Generator
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from hashlib import sha256
 import os
+from typing import Annotated
 from pathlib import Path
 from uuid import uuid4
 
@@ -139,6 +140,11 @@ def iter_recent_months(*, ending_year: int, ending_month: int, months: int) -> l
         values.append((year, month))
         year, month = previous_year_month(year, month)
     return list(reversed(values))
+
+
+def current_utc_year_month() -> tuple[int, int]:
+    now = datetime.now(timezone.utc)
+    return now.year, now.month
 
 
 def _pct_change(current: Decimal, previous: Decimal | None) -> float | None:
@@ -534,10 +540,27 @@ def get_trend_report(
     months: int = Query(default=6, ge=1, le=24),
     vendor: str | None = None,
     currency: str | None = None,
+    anchor_year: Annotated[int | None, Query(ge=1, le=9999)] = None,
+    anchor_month: Annotated[int | None, Query()] = None,
     db: Session = Depends(get_db),
 ) -> TrendReportResponse:
-    today = date.today()
-    month_keys = iter_recent_months(ending_year=today.year, ending_month=today.month, months=months)
+    if (anchor_year is None) != (anchor_month is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="anchor_year and anchor_month must be provided together",
+        )
+    if anchor_month is not None and not 1 <= anchor_month <= 12:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="anchor_month must be between 1 and 12",
+        )
+
+    if anchor_year is not None and anchor_month is not None:
+        ending_year, ending_month = anchor_year, anchor_month
+    else:
+        ending_year, ending_month = current_utc_year_month()
+
+    month_keys = iter_recent_months(ending_year=ending_year, ending_month=ending_month, months=months)
     first_year, first_month = month_keys[0]
     last_year, last_month = month_keys[-1]
     range_start, _ = month_bounds(first_year, first_month)
