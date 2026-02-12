@@ -68,14 +68,11 @@ def parse_invoice_text(text: str, filename: str | None = None) -> ParsedInvoiceD
     lines = [line.strip() for line in normalized_text.splitlines() if line.strip()]
 
     parsed = ParsedInvoiceData()
-    parsed.vendor = parse_vendor(lines, filename)
+    parsed.vendor = parse_vendor(lines, normalized_text)
     parsed.invoice_number = parse_invoice_number(normalized_text)
     parsed.invoice_date = parse_labeled_date(normalized_text, ["invoice date", "date issued", "issue date", "date"])
 
-    total_currency, total_amount = parse_labeled_amount(
-        lines,
-        labels=["total amount", "invoice total", "amount due", "balance due", "total due", "grand total"],
-    )
+    total_currency, total_amount = parse_total_amount(lines)
     parsed.total_amount = total_amount
 
     tax_currency, tax_amount = parse_labeled_amount(
@@ -93,30 +90,22 @@ def parse_invoice_text(text: str, filename: str | None = None) -> ParsedInvoiceD
     return parsed
 
 
-def parse_vendor(lines: list[str], filename: str | None) -> str | None:
+def parse_vendor(lines: list[str], text: str) -> str | None:
+    low_text = text.lower()
+    if any(token in low_text for token in ("console.aws.amazon.com", "amazon web services", "aws service charges")):
+        return "AWS"
+
     for line in lines[:6]:
         low = line.lower()
         if any(token in low for token in ("invoice", "bill to", "date", "amount", "tax", "total", "invoice #")):
             continue
-        if re.search(r"[A-Za-z]", line):
-            return line[:255]
+        if not re.search(r"[A-Za-z]", line):
+            continue
+        if len(line) > 80 or len(line.split()) > 8:
+            continue
+        return line[:255]
 
-    if not filename:
-        return None
-
-    stem = Path(filename).stem
-    cleaned = re.sub(r"[_\-.]+", " ", stem)
-    tokens = [
-        token
-        for token in cleaned.split()
-        if token.lower() not in {"invoice", "inv", "bill", "statement", "copy", "final"}
-        and re.search(r"[A-Za-z]", token)
-    ]
-    if not tokens:
-        return None
-
-    vendor = " ".join(tokens[:4]).strip()
-    return vendor[:255] if vendor else None
+    return "unknown"
 
 
 def parse_invoice_number(text: str) -> str | None:
@@ -151,6 +140,23 @@ def parse_labeled_amount(lines: list[str], labels: list[str]) -> tuple[str | Non
     return None, None
 
 
+def parse_total_amount(lines: list[str]) -> tuple[str | None, Decimal | None]:
+    for index, line in enumerate(lines):
+        if "total amount due" not in line.lower():
+            continue
+
+        search_lines = lines[index : index + 6]
+        for candidate in search_lines:
+            parsed = parse_amount_with_currency(candidate)
+            if parsed is not None:
+                return parsed
+
+    return parse_labeled_amount(
+        lines,
+        labels=["total amount", "invoice total", "amount due", "balance due", "total due", "grand total"],
+    )
+
+
 def parse_currency(text: str, candidates: list[str | None]) -> str | None:
     for candidate in candidates:
         if candidate:
@@ -181,7 +187,7 @@ def parse_amount_with_currency(text: str) -> tuple[str | None, Decimal] | None:
         if value is not None:
             return CURRENCY_SYMBOLS.get(match.group(1)), value
 
-    match = re.search(r"\b([0-9][0-9,]*(?:\.[0-9]{2})?)\b", text)
+    match = re.search(r"(?<![A-Za-z0-9\-])([0-9][0-9,]*(?:\.[0-9]{2}))(?![A-Za-z0-9\-])", text)
     if match:
         value = parse_decimal(match.group(1))
         if value is not None:
@@ -199,8 +205,16 @@ def parse_billing_period(text: str) -> tuple[date, date] | None:
     if not match:
         return None
 
-    start = parse_date(match.group(1).strip())
-    end = parse_date(match.group(2).strip())
+    start_text = match.group(1).strip()
+    end_text = match.group(2).strip()
+
+    start = parse_date(start_text)
+    end = parse_date(end_text)
+
+    if start is None and end is not None:
+        start = parse_date(f"{start_text}, {end.year}")
+    if end is None and start is not None:
+        end = parse_date(f"{end_text}, {start.year}")
     if start is None or end is None:
         return None
     if end < start:
