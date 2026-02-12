@@ -15,7 +15,10 @@ from app.models import Base, Invoice, InvoiceSource
 from main import (
     get_invoice,
     get_invoice_text,
+    get_monthly_mom_report,
     get_monthly_report,
+    previous_year_month,
+    seed_dev_data,
     get_vendor_report,
     list_invoices,
     upload_invoice,
@@ -306,3 +309,164 @@ def test_vendor_report_lifetime_grouped_by_vendor_and_currency(db_session: Sessi
         {"vendor": "AWS", "currency": "USD", "invoice_count": 2, "total_amount_sum": 150.0},
         {"vendor": "Stripe", "currency": "USD", "invoice_count": 1, "total_amount_sum": 20.0},
     ]
+
+
+def test_previous_year_month_rollover():
+    assert previous_year_month(2026, 1) == (2025, 12)
+    assert previous_year_month(2026, 6) == (2026, 5)
+
+
+def test_monthly_mom_report_pct_change_handles_missing_and_zero_previous(db_session: Session):
+    db_session.add_all(
+        [
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 11, 1),
+                billing_period_end=date(2025, 11, 30),
+                invoice_date=date(2025, 11, 30),
+                currency="USD",
+                total_amount=Decimal("0.00"),
+                tax_amount=Decimal("0.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-prev-zero.pdf",
+                file_hash="hash-aws-prev-zero",
+            ),
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 12, 1),
+                billing_period_end=date(2025, 12, 31),
+                invoice_date=date(2025, 12, 31),
+                currency="USD",
+                total_amount=Decimal("50.00"),
+                tax_amount=Decimal("5.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-current.pdf",
+                file_hash="hash-aws-current",
+            ),
+            Invoice(
+                vendor="Cloudflare",
+                billing_period_start=date(2025, 12, 1),
+                billing_period_end=date(2025, 12, 31),
+                invoice_date=date(2025, 12, 31),
+                currency="USD",
+                total_amount=Decimal("30.00"),
+                tax_amount=Decimal("3.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/cloudflare-current.pdf",
+                file_hash="hash-cloudflare-current",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    mom_report = get_monthly_mom_report(year=2025, month=12, db=db_session)
+    aws_group = next(group for group in mom_report.groups if group.vendor == "AWS" and group.currency == "USD")
+    cloudflare_group = next(
+        group for group in mom_report.groups if group.vendor == "Cloudflare" and group.currency == "USD"
+    )
+
+    assert aws_group.prev_total_amount_sum == 0.0
+    assert aws_group.pct_total_amount_change is None
+    assert aws_group.prev_tax_amount_sum == 0.0
+    assert aws_group.pct_tax_amount_change is None
+
+    assert cloudflare_group.prev_total_amount_sum is None
+    assert cloudflare_group.pct_total_amount_change is None
+
+
+def test_monthly_mom_group_matching_is_vendor_and_currency(db_session: Session):
+    db_session.add_all(
+        [
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 11, 1),
+                billing_period_end=date(2025, 11, 30),
+                invoice_date=date(2025, 11, 30),
+                currency="EUR",
+                total_amount=Decimal("200.00"),
+                tax_amount=Decimal("20.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-prev-eur.pdf",
+                file_hash="hash-aws-prev-eur",
+            ),
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2025, 12, 1),
+                billing_period_end=date(2025, 12, 31),
+                invoice_date=date(2025, 12, 31),
+                currency="USD",
+                total_amount=Decimal("300.00"),
+                tax_amount=Decimal("30.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/aws-current-usd.pdf",
+                file_hash="hash-aws-current-usd",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    mom_report = get_monthly_mom_report(year=2025, month=12, db=db_session)
+    aws_usd = next(group for group in mom_report.groups if group.vendor == "AWS" and group.currency == "USD")
+    aws_eur = next(group for group in mom_report.groups if group.vendor == "AWS" and group.currency == "EUR")
+
+    assert aws_usd.total_amount_sum == 300.0
+    assert aws_usd.prev_total_amount_sum is None
+    assert aws_usd.pct_total_amount_change is None
+
+    assert aws_eur.total_amount_sum == 0.0
+    assert aws_eur.prev_total_amount_sum == 200.0
+    assert aws_eur.delta_total_amount == -200.0
+
+
+def test_monthly_mom_report_december_with_no_previous_returns_null_pct(db_session: Session):
+    db_session.add(
+        Invoice(
+            vendor="AWS",
+            billing_period_start=date(2025, 12, 1),
+            billing_period_end=date(2025, 12, 31),
+            invoice_date=date(2025, 12, 31),
+            currency="USD",
+            total_amount=Decimal("1282.37"),
+            tax_amount=Decimal("105.88"),
+            source=InvoiceSource.UPLOAD,
+            file_path="/tmp/aws-dec-only.pdf",
+            file_hash="hash-aws-dec-only",
+        )
+    )
+    db_session.commit()
+
+    mom_report = get_monthly_mom_report(year=2025, month=12, db=db_session)
+
+    assert mom_report.previous.groups == []
+    assert mom_report.previous.grand_totals == []
+    assert len(mom_report.groups) == 1
+    assert mom_report.groups[0].pct_total_amount_change is None
+    assert mom_report.groups[0].pct_tax_amount_change is None
+
+
+def test_dev_seed_endpoint_enforced_and_seeds_data(db_session: Session, monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.delenv("ENV", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        seed_dev_data(db=db_session)
+    assert exc.value.status_code == 404
+
+    monkeypatch.setenv("ENV", "dev")
+    seeded = seed_dev_data(db=db_session)
+    assert seeded["status"] == "ok"
+
+    today = date.today()
+    payload = get_monthly_mom_report(year=today.year, month=today.month, db=db_session).model_dump()
+
+    aws_group = next(
+        group for group in payload["groups"] if group["vendor"] == "AWS" and group["currency"] == "USD"
+    )
+    assert aws_group["prev_total_amount_sum"] == 1000.0
+    assert aws_group["total_amount_sum"] == 1282.37
+    assert aws_group["delta_total_amount"] == 282.37
+    assert aws_group["pct_total_amount_change"] == pytest.approx(28.237)
+
+    aws_currency_total = next(total for total in payload["grand_totals"] if total["currency"] == "USD")
+    assert aws_currency_total["prev_tax_amount_sum"] == 80.0
+    assert aws_currency_total["tax_amount_sum"] == 105.88
