@@ -10,6 +10,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -19,8 +20,14 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-parser_kind_enum = sa.Enum("rules", "llm", name="parser_kind")
-parse_run_status_enum = sa.Enum("success", "failed", "needs_review", name="parse_run_status")
+parser_kind_enum = postgresql.ENUM("rules", "llm", name="parser_kind", create_type=False)
+parse_run_status_enum = postgresql.ENUM(
+    "success",
+    "failed",
+    "needs_review",
+    name="parse_run_status",
+    create_type=False,
+)
 
 
 def upgrade() -> None:
