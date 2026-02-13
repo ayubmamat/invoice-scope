@@ -27,6 +27,7 @@ from main import (
     get_vendor_report,
     list_invoices,
     upload_invoice,
+    home,
 )
 
 
@@ -1052,3 +1053,25 @@ def test_anomalies_report_detects_spike_new_vendor_and_data_quality(db_session: 
 
     data_quality = next(item for item in payload if item.get("type") == "data_quality")
     assert data_quality["issue"] == "missing_total_amount"
+
+
+def test_homepage_dashboard_and_upload_form(db_session: Session):
+    from fastapi import HTTPException
+    from starlette.requests import Request
+    import main as main_module
+
+    request = Request(scope={"type": "http", "method": "GET", "path": "/", "headers": []})
+
+    if main_module.templates is None:
+        with pytest.raises(HTTPException) as exc:
+            home(request=request, months=6, db=db_session)
+        assert exc.value.status_code == 503
+        return
+
+    response = home(request=request, months=6, db=db_session)
+    assert response.status_code == 200
+    assert response.template.name == "dashboard.html"
+    assert response.context["monthly_report"].month >= 1
+    assert response.context["mom_report"].current.month >= 1
+    assert "anomalies" in response.context
+    assert "trend" in response.context
