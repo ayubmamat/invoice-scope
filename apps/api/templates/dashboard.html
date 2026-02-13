@@ -213,7 +213,15 @@
             <td>${invoice.currency || 'N/A'}</td>
             <td>${money(invoice.total_amount)}</td>
             <td>${invoice.created_at || 'N/A'}</td>
-            <td><button type="button" class="reparse-button" data-id="${invoice.id}">Re-analyze</button></td>
+            <td>
+              <button
+                type="button"
+                class="reparse-button"
+                data-id="${invoice.id}"
+                title="Re-extracts text from stored PDF and updates the invoice."
+                aria-label="Re-analyze. Re-extracts text from stored PDF and updates the invoice."
+              >Re-analyze</button>
+            </td>
           </tr>`, 'No invoices uploaded yet.');
       }
 
