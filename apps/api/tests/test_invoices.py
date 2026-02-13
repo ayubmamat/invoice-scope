@@ -78,6 +78,10 @@ def test_upload_invoice_and_list(db_session: Session, tmp_path: Path, monkeypatc
     assert result["source"] == "upload"
     assert result["file_path"].endswith(".pdf")
     assert Path(result["file_path"]).exists()
+    assert result["subtotal_amount"] is None
+    assert result["amount_paid"] is None
+    assert result["amount_due"] is None
+    assert result["status"] is None
 
     invoices = list_invoices(db_session)
     assert len(invoices) == 1
@@ -255,8 +259,11 @@ def test_reparse_vendor_specific_azure_and_freshdesk(db_session: Session, tmp_pa
     assert azure_response["billing_period_start"] == date(2026, 1, 1)
     assert azure_response["billing_period_end"] == date(2026, 1, 31)
     assert azure_response["currency"] == "USD"
+    assert azure_response["subtotal_amount"] == 0.5
     assert azure_response["total_amount"] == 0.55
     assert azure_response["tax_amount"] == 0.05
+    assert azure_response["amount_due"] is None
+    assert azure_response["status"] == "UNKNOWN"
 
     assert freshdesk_response["vendor"] == "Freshdesk"
     assert freshdesk_response["invoice_number"] == "FD2581504"
@@ -264,7 +271,11 @@ def test_reparse_vendor_specific_azure_and_freshdesk(db_session: Session, tmp_pa
     assert freshdesk_response["billing_period_start"] == date(2026, 1, 13)
     assert freshdesk_response["billing_period_end"] == date(2026, 2, 13)
     assert freshdesk_response["currency"] == "USD"
+    assert freshdesk_response["subtotal_amount"] == 234.0
     assert freshdesk_response["total_amount"] == 234.0
+    assert freshdesk_response["amount_paid"] == 234.0
+    assert freshdesk_response["amount_due"] == 0.0
+    assert freshdesk_response["status"] == "PAID"
     assert freshdesk_response["tax_amount"] is None
 
 def test_upload_source_normalized_to_lowercase(db_session: Session, tmp_path: Path, monkeypatch):

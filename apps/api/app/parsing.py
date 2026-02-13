@@ -34,8 +34,12 @@ class ParsedInvoiceData:
     invoice_number: str | None = None
     invoice_date: date | None = None
     currency: str | None = None
+    subtotal_amount: Decimal | None = None
     total_amount: Decimal | None = None
     tax_amount: Decimal | None = None
+    amount_paid: Decimal | None = None
+    amount_due: Decimal | None = None
+    status: str | None = None
     billing_period_start: date | None = None
     billing_period_end: date | None = None
 
@@ -71,6 +75,8 @@ def parse_invoice_text(text: str, filename: str | None = None) -> ParsedInvoiceD
         return parse_azure_invoice_text(normalized_text)
     if vendor_type == "freshdesk":
         return parse_freshdesk_invoice_text(normalized_text)
+    if vendor_type == "aws":
+        return parse_aws_invoice_text(normalized_text)
 
     return parse_generic_invoice_text(normalized_text)
 
@@ -112,6 +118,25 @@ def parse_generic_invoice_text(text: str) -> ParsedInvoiceData:
 
     return parsed
 
+
+
+
+def parse_aws_invoice_text(text: str) -> ParsedInvoiceData:
+    parsed = parse_generic_invoice_text(text)
+    parsed.vendor = "AWS"
+    parsed.status = "UNKNOWN"
+
+    due_match = re.search(
+        r"TOTAL\s+AMOUNT\s+DUE[^\n]{0,120}?\b(?:USD|EUR|GBP|CAD|AUD|JPY|INR)\b\s*([0-9][0-9,]*(?:\.[0-9]{2})?)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if due_match:
+        parsed.amount_due = parse_decimal(due_match.group(1))
+    elif parsed.total_amount is not None and "total amount due" in text.lower():
+        parsed.amount_due = parsed.total_amount
+
+    return parsed
 
 def parse_azure_invoice_text(text: str) -> ParsedInvoiceData:
     parsed = ParsedInvoiceData(vendor="Microsoft Azure")
@@ -162,6 +187,14 @@ def parse_azure_invoice_text(text: str) -> ParsedInvoiceData:
             parsed.currency = fallback_match.group(1).upper()
             parsed.total_amount = parse_decimal(fallback_match.group(2))
 
+    subtotal_match = re.search(
+        r"\bSubtotal\s*(?:USD)?\s*([0-9][0-9,]*(?:\.[0-9]{2})?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if subtotal_match:
+        parsed.subtotal_amount = parse_decimal(subtotal_match.group(1))
+
     tax_match = re.search(
         r"\b(?:Tax Amount|Tax)\s*(?:USD)?\s*([0-9][0-9,]*(?:\.[0-9]{2})?)",
         text,
@@ -169,6 +202,20 @@ def parse_azure_invoice_text(text: str) -> ParsedInvoiceData:
     )
     if tax_match:
         parsed.tax_amount = parse_decimal(tax_match.group(1))
+
+    due_match = re.search(
+        r"Due\s+on[^\n]{0,80}?\b(USD)\b\s*([0-9][0-9,]*(?:\.[0-9]{2})?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if due_match:
+        parsed.currency = parsed.currency or due_match.group(1).upper()
+        parsed.amount_due = parse_decimal(due_match.group(2))
+
+    parsed.subtotal_amount = parsed.subtotal_amount if parsed.subtotal_amount is not None else (
+        parsed.total_amount - parsed.tax_amount if parsed.total_amount is not None and parsed.tax_amount is not None else None
+    )
+    parsed.status = "UNKNOWN"
 
     return parsed
 
@@ -184,6 +231,14 @@ def parse_freshdesk_invoice_text(text: str) -> ParsedInvoiceData:
     if invoice_date_match:
         parsed.invoice_date = parse_date(invoice_date_match.group(1))
 
+    subtotal_match = re.search(
+        r"(?:Subtotal|Sub\s*Total)\s*[—–-]?\s*([$€£])?\s*([0-9][0-9,]*(?:\.[0-9]{2})?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if subtotal_match:
+        parsed.subtotal_amount = parse_decimal(subtotal_match.group(2))
+
     amount_match = re.search(
         r"Invoice\s*Amount\s*[—–-]\s*([$€£])\s*([0-9][0-9,]*(?:\.[0-9]{2})?)\s*\(([A-Z]{3})\)",
         text,
@@ -192,6 +247,15 @@ def parse_freshdesk_invoice_text(text: str) -> ParsedInvoiceData:
     if amount_match:
         parsed.currency = amount_match.group(3).upper()
         parsed.total_amount = parse_decimal(amount_match.group(2))
+
+    due_match = re.search(
+        r"Amount\s+Due\s*[—–-]\s*([$€£])\s*([0-9][0-9,]*(?:\.[0-9]{2})?)\s*\(([A-Z]{3})\)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if due_match:
+        parsed.currency = parsed.currency or due_match.group(3).upper()
+        parsed.amount_due = parse_decimal(due_match.group(2))
 
     billing_match = re.search(
         r"Billing\s*Period\s*[—–-]\s*([A-Za-z]{3,9}\s+[0-9]{1,2})\s+to\s+([A-Za-z]{3,9}\s+[0-9]{1,2},\s*[0-9]{4})",
@@ -205,6 +269,12 @@ def parse_freshdesk_invoice_text(text: str) -> ParsedInvoiceData:
             if start is not None and end >= start:
                 parsed.billing_period_start = start
                 parsed.billing_period_end = end
+
+    if parsed.total_amount is not None:
+        parsed.subtotal_amount = parsed.subtotal_amount or parsed.total_amount
+        parsed.amount_paid = parsed.total_amount
+        parsed.amount_due = Decimal("0.00")
+        parsed.status = "PAID"
 
     return parsed
 
