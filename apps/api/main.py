@@ -770,10 +770,10 @@ def _truncate_text(text: str | None, limit: int = 20000) -> str:
     return f"{value[:limit]}\n\n... [truncated {len(value) - limit} chars]"
 
 
-@app.get("/dashboard", response_class=HTMLResponse)
-def dashboard(request: Request, months: int = Query(default=6, ge=1, le=24), db: Session = Depends(get_db)) -> HTMLResponse:
+def render_dashboard(request: Request, months: int, db: Session) -> HTMLResponse:
     year, month = current_utc_year_month()
     monthly_report = build_monthly_report(year=year, month=month, db=db)
+    mom_report = get_monthly_mom_report(year=year, month=month, db=db)
     anomalies = get_anomalies_report(year=year, month=month, db=db)
     trend = get_trend_report(months=months, anchor_year=year, anchor_month=month, db=db)
 
@@ -788,10 +788,21 @@ def dashboard(request: Request, months: int = Query(default=6, ge=1, le=24), db:
             "year": year,
             "month": month,
             "monthly_report": monthly_report,
+            "mom_report": mom_report,
             "anomalies": anomalies.anomalies,
             "trend": trend.months,
         },
     )
+
+
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request, months: int = Query(default=6, ge=1, le=24), db: Session = Depends(get_db)) -> HTMLResponse:
+    return render_dashboard(request=request, months=months, db=db)
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request, months: int = Query(default=6, ge=1, le=24), db: Session = Depends(get_db)) -> HTMLResponse:
+    return render_dashboard(request=request, months=months, db=db)
 
 
 @app.get("/ui/invoices", response_class=HTMLResponse)

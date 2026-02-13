@@ -1,43 +1,106 @@
 <!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>InvoiceScope Dashboard</title></head>
+  <head>
+    <meta charset="utf-8">
+    <title>InvoiceScope Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='dashboard.css') }}">
+  </head>
   <body>
-    <h1>Dashboard ({{ year }}-{{ '%02d'|format(month) }})</h1>
+    <h1>InvoiceScope Dashboard</h1>
+    <p>Reporting month: {{ year }}-{{ '%02d'|format(month) }}</p>
 
-    <h2>Current Month Totals by Currency</h2>
-    <table border="1" cellpadding="6">
-      <tr><th>Currency</th><th>Invoices</th><th>Total</th><th>Tax</th></tr>
-      {% for row in monthly_report.grand_totals %}
-      <tr><td>{{ row.currency or 'N/A' }}</td><td>{{ row.invoice_count }}</td><td>{{ row.total_amount_sum }}</td><td>{{ row.tax_amount_sum }}</td></tr>
+    <h2>Upload Invoice PDF</h2>
+    <form action="/invoices/upload" method="post" enctype="multipart/form-data">
+      <p>
+        <label for="file">PDF File:</label>
+        <input id="file" name="file" type="file" accept="application/pdf,.pdf" required>
+      </p>
+      <p>
+        <label for="source">Source:</label>
+        <select id="source" name="source">
+          <option value="upload" selected>upload</option>
+          <option value="email">email</option>
+        </select>
+      </p>
+      <p>
+        <label for="vendor">Vendor Override (optional):</label>
+        <input id="vendor" name="vendor" type="text" placeholder="e.g. AWS">
+      </p>
+      <p>
+        <button type="submit">Upload Invoice</button>
+      </p>
+    </form>
+
+    <h2>Current Month Report</h2>
+    <table>
+      <tr><th>Vendor</th><th>Currency</th><th>Invoices</th><th>Total</th><th>Tax</th></tr>
+      {% for row in monthly_report.groups %}
+      <tr>
+        <td>{{ row.vendor }}</td>
+        <td>{{ row.currency or 'N/A' }}</td>
+        <td>{{ row.invoice_count }}</td>
+        <td>{{ row.total_amount_sum }}</td>
+        <td>{{ row.tax_amount_sum }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No invoice data for this month.</td></tr>
       {% endfor %}
     </table>
 
-    <h2>Vendor Breakdown</h2>
-    <table border="1" cellpadding="6">
-      <tr><th>Vendor</th><th>Currency</th><th>Invoices</th><th>Total</th><th>Tax</th></tr>
-      {% for row in monthly_report.groups %}
-      <tr><td>{{ row.vendor }}</td><td>{{ row.currency or 'N/A' }}</td><td>{{ row.invoice_count }}</td><td>{{ row.total_amount_sum }}</td><td>{{ row.tax_amount_sum }}</td></tr>
+    <h2>Month-over-Month Report</h2>
+    <table>
+      <tr><th>Vendor</th><th>Currency</th><th>Current Total</th><th>Previous Total</th><th>Delta</th><th>% Change</th></tr>
+      {% for row in mom_report.groups %}
+      <tr>
+        <td>{{ row.vendor }}</td>
+        <td>{{ row.currency or 'N/A' }}</td>
+        <td>{{ row.total_amount_sum }}</td>
+        <td>{{ row.prev_total_amount_sum if row.prev_total_amount_sum is not none else 'N/A' }}</td>
+        <td>{{ row.delta_total_amount }}</td>
+        <td>{{ row.pct_total_amount_change if row.pct_total_amount_change is not none else 'N/A' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No month-over-month data available.</td></tr>
       {% endfor %}
     </table>
 
     <h2>Anomalies</h2>
-    <table border="1" cellpadding="6">
-      <tr><th>Type</th><th>Details</th></tr>
+    <table>
+      <tr><th>Type</th><th>Vendor</th><th>Currency</th><th>Details</th></tr>
       {% for anomaly in anomalies %}
       <tr>
         <td>{{ anomaly.type }}</td>
-        <td><pre>{{ anomaly }}</pre></td>
+        <td>{{ anomaly.vendor if anomaly.vendor is defined else 'N/A' }}</td>
+        <td>{{ anomaly.currency if anomaly.currency is defined and anomaly.currency is not none else 'N/A' }}</td>
+        <td>
+          {% if anomaly.type == 'spend_spike' %}
+            Current={{ anomaly.current_total }}, Previous={{ anomaly.previous_total }}, Delta={{ anomaly.delta }}, Pct={{ anomaly.pct_change }}
+          {% elif anomaly.type == 'new_vendor' %}
+            Current={{ anomaly.current_total }}
+          {% else %}
+            Invoice ID={{ anomaly.invoice_id }}, Issue={{ anomaly.issue }}
+          {% endif %}
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="2">No anomalies</td></tr>
+      <tr><td colspan="4">No anomalies detected.</td></tr>
       {% endfor %}
     </table>
 
-    <h2>Trend (Last {{ trend|length }} points)</h2>
-    <table border="1" cellpadding="6">
+    <h2>6-Month Trend</h2>
+    <table>
       <tr><th>Year</th><th>Month</th><th>Currency</th><th>Invoices</th><th>Total</th><th>Tax</th></tr>
       {% for point in trend %}
-      <tr><td>{{ point.year }}</td><td>{{ point.month }}</td><td>{{ point.currency or 'N/A' }}</td><td>{{ point.invoice_count }}</td><td>{{ point.total_amount_sum }}</td><td>{{ point.tax_amount_sum }}</td></tr>
+      <tr>
+        <td>{{ point.year }}</td>
+        <td>{{ point.month }}</td>
+        <td>{{ point.currency or 'N/A' }}</td>
+        <td>{{ point.invoice_count }}</td>
+        <td>{{ point.total_amount_sum }}</td>
+        <td>{{ point.tax_amount_sum }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No trend data available.</td></tr>
       {% endfor %}
     </table>
   </body>
