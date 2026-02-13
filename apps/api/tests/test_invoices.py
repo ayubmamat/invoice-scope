@@ -177,6 +177,8 @@ def test_reparse_updates_null_fields(db_session: Session, tmp_path: Path, monkey
     assert response["tax_amount"] == 105.88
     assert response["billing_period_start"] == date(2025, 12, 1)
     assert response["billing_period_end"] == date(2025, 12, 31)
+    assert response["report_year"] == 2025
+    assert response["report_month"] == 12
 
 
 def test_reparse_idempotent(db_session: Session, tmp_path: Path, monkeypatch):
@@ -215,6 +217,8 @@ def test_reparse_idempotent(db_session: Session, tmp_path: Path, monkeypatch):
     assert first["currency"] == second["currency"] == "USD"
     assert first["total_amount"] == second["total_amount"] == 1282.37
     assert first["tax_amount"] == second["tax_amount"] == 105.88
+    assert first["report_year"] == second["report_year"] == 2025
+    assert first["report_month"] == second["report_month"] == 12
 
 
 
@@ -316,7 +320,7 @@ def test_upload_invalid_source_returns_422(db_session: Session, tmp_path: Path, 
     assert "Allowed values: upload, email" in exc.value.detail
 
 
-def test_monthly_report_overlapping_billing_period_and_invoice_date_fallback(db_session: Session):
+def test_monthly_report_uses_report_period_columns(db_session: Session):
     db_session.add_all(
         [
             Invoice(
@@ -377,9 +381,9 @@ def test_monthly_report_overlapping_billing_period_and_invoice_date_fallback(db_
         {
             "vendor": "AWS",
             "currency": "USD",
-            "invoice_count": 2,
-            "total_amount_sum": 140.0,
-            "tax_amount_sum": 14.0,
+            "invoice_count": 1,
+            "total_amount_sum": 100.0,
+            "tax_amount_sum": 10.0,
         },
         {
             "vendor": "Stripe",
@@ -398,9 +402,9 @@ def test_monthly_report_overlapping_billing_period_and_invoice_date_fallback(db_
         },
         {
             "currency": "USD",
-            "invoice_count": 2,
-            "total_amount_sum": 140.0,
-            "tax_amount_sum": 14.0,
+            "invoice_count": 1,
+            "total_amount_sum": 100.0,
+            "tax_amount_sum": 10.0,
         },
     ]
 
