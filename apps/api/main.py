@@ -194,22 +194,14 @@ def _pct_change(current: Decimal, previous: Decimal | None) -> float | None:
 
 
 def month_invoice_filter(year: int, month: int):
-    month_start, month_end = month_bounds(year, month)
+    return and_(Invoice.report_year == year, Invoice.report_month == month)
 
-    overlapping_billing_period = and_(
-        or_(Invoice.billing_period_start.is_not(None), Invoice.billing_period_end.is_not(None)),
-        or_(Invoice.billing_period_start.is_(None), Invoice.billing_period_start < month_end),
-        or_(Invoice.billing_period_end.is_(None), Invoice.billing_period_end >= month_start),
-    )
-    invoice_date_fallback = and_(
-        Invoice.billing_period_start.is_(None),
-        Invoice.billing_period_end.is_(None),
-        Invoice.invoice_date.is_not(None),
-        Invoice.invoice_date >= month_start,
-        Invoice.invoice_date < month_end,
-    )
 
-    return or_(overlapping_billing_period, invoice_date_fallback)
+def resolve_report_period(*, billing_period_start: date | None, invoice_date: date | None) -> tuple[int | None, int | None]:
+    report_date = billing_period_start or invoice_date
+    if report_date is None:
+        return None, None
+    return report_date.year, report_date.month
 
 
 def get_month_invoices(year: int, month: int, db: Session) -> list[Invoice]:
@@ -269,6 +261,8 @@ def invoice_to_dict(invoice: Invoice) -> dict:
         "billing_period_start": invoice.billing_period_start,
         "billing_period_end": invoice.billing_period_end,
         "invoice_date": invoice.invoice_date,
+        "report_year": invoice.report_year,
+        "report_month": invoice.report_month,
         "currency": invoice.currency,
         "subtotal_amount": float(invoice.subtotal_amount) if invoice.subtotal_amount is not None else None,
         "total_amount": float(invoice.total_amount) if invoice.total_amount is not None else None,
@@ -335,12 +329,19 @@ async def upload_invoice(
     parsed = parse_invoice_text(extracted_text, filename=file.filename)
     resolved_vendor = (vendor or "").strip() or parsed.vendor or "unknown"
 
+    report_year, report_month = resolve_report_period(
+        billing_period_start=parsed.billing_period_start,
+        invoice_date=parsed.invoice_date,
+    )
+
     invoice = Invoice(
         vendor=resolved_vendor,
         invoice_number=parsed.invoice_number,
         billing_period_start=parsed.billing_period_start,
         billing_period_end=parsed.billing_period_end,
         invoice_date=parsed.invoice_date,
+        report_year=report_year,
+        report_month=report_month,
         currency=parsed.currency,
         subtotal_amount=parsed.subtotal_amount,
         total_amount=parsed.total_amount,
@@ -417,6 +418,10 @@ def parse_existing_invoice(
     invoice.billing_period_start = parsed.billing_period_start
     invoice.billing_period_end = parsed.billing_period_end
     invoice.invoice_date = parsed.invoice_date
+    invoice.report_year, invoice.report_month = resolve_report_period(
+        billing_period_start=parsed.billing_period_start,
+        invoice_date=parsed.invoice_date,
+    )
     invoice.currency = parsed.currency
     invoice.subtotal_amount = parsed.subtotal_amount
     invoice.total_amount = parsed.total_amount
@@ -572,8 +577,8 @@ def get_anomalies_report(
             anomalies.append(DataQualityAnomaly(invoice_id=invoice.id, issue="missing_total_amount"))
         if invoice.currency is None:
             anomalies.append(DataQualityAnomaly(invoice_id=invoice.id, issue="missing_currency"))
-        if invoice.invoice_date is None:
-            anomalies.append(DataQualityAnomaly(invoice_id=invoice.id, issue="missing_invoice_date"))
+        if invoice.report_year is None or invoice.report_month is None:
+            anomalies.append(DataQualityAnomaly(invoice_id=invoice.id, issue="missing_report_period"))
 
     return AnomaliesReportResponse(year=year, month=month, anomalies=anomalies)
 
@@ -618,6 +623,8 @@ def seed_dev_data(db: Session = Depends(get_db)) -> dict[str, int | str]:
             billing_period_start=spec["month_start"],
             billing_period_end=spec["month_end"] - timedelta(days=1),
             invoice_date=spec["month_end"] - timedelta(days=1),
+            report_year=spec["month_start"].year,
+            report_month=spec["month_start"].month,
             subtotal_amount=spec["total_amount"] - spec["tax_amount"],
             total_amount=spec["total_amount"],
             tax_amount=spec["tax_amount"],
@@ -684,25 +691,11 @@ def get_trend_report(
         ending_year, ending_month = current_utc_year_month()
 
     month_keys = iter_recent_months(ending_year=ending_year, ending_month=ending_month, months=months)
-    first_year, first_month = month_keys[0]
-    last_year, last_month = month_keys[-1]
-    range_start, _ = month_bounds(first_year, first_month)
-    _, range_end = month_bounds(last_year, last_month)
 
     filters = [
-        or_(
-            and_(
-                Invoice.billing_period_start.is_not(None),
-                Invoice.billing_period_start >= range_start,
-                Invoice.billing_period_start < range_end,
-            ),
-            and_(
-                Invoice.billing_period_start.is_(None),
-                Invoice.invoice_date.is_not(None),
-                Invoice.invoice_date >= range_start,
-                Invoice.invoice_date < range_end,
-            ),
-        )
+        Invoice.report_year.is_not(None),
+        Invoice.report_month.is_not(None),
+        or_(*[and_(Invoice.report_year == year, Invoice.report_month == month) for year, month in month_keys]),
     ]
     if vendor is not None:
         filters.append(Invoice.vendor == vendor)
@@ -717,11 +710,10 @@ def get_trend_report(
     currencies_seen: set[str | None] = set()
 
     for invoice in invoices:
-        bucket_date = invoice.billing_period_start or invoice.invoice_date
-        if bucket_date is None:
+        if invoice.report_year is None or invoice.report_month is None:
             continue
 
-        key = (bucket_date.year, bucket_date.month, invoice.currency)
+        key = (invoice.report_year, invoice.report_month, invoice.currency)
         grouped[key]["invoice_count"] += 1
         grouped[key]["total_amount_sum"] += invoice.total_amount or Decimal("0")
         grouped[key]["tax_amount_sum"] += invoice.tax_amount or Decimal("0")

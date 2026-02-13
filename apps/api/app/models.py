@@ -2,7 +2,7 @@ import enum
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Enum, Numeric, String, Text, func
+from sqlalchemy import Date, DateTime, Enum, Numeric, String, Text, event, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -32,6 +32,8 @@ class Invoice(Base):
     billing_period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
     billing_period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
     invoice_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    report_year: Mapped[int | None] = mapped_column(nullable=True)
+    report_month: Mapped[int | None] = mapped_column(nullable=True)
     currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     subtotal_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     total_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
@@ -63,3 +65,23 @@ class Invoice(Base):
         server_default=func.now(),
         nullable=False,
     )
+
+
+def resolve_report_date(*, billing_period_start: date | None, invoice_date: date | None) -> date | None:
+    return billing_period_start or invoice_date
+
+
+@event.listens_for(Invoice, "before_insert")
+@event.listens_for(Invoice, "before_update")
+def set_report_period(_: object, __: object, target: Invoice) -> None:
+    report_date = resolve_report_date(
+        billing_period_start=target.billing_period_start,
+        invoice_date=target.invoice_date,
+    )
+    if report_date is None:
+        target.report_year = None
+        target.report_month = None
+        return
+
+    target.report_year = report_date.year
+    target.report_month = report_date.month
