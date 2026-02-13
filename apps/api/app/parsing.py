@@ -65,24 +65,146 @@ def extract_pdf_text(file_path: Path) -> str:
 
 def parse_invoice_text(text: str, filename: str | None = None) -> ParsedInvoiceData:
     normalized_text = text.strip()
-    lines = [line.strip() for line in normalized_text.splitlines() if line.strip()]
+    vendor_type = detect_vendor_type(normalized_text)
+
+    if vendor_type == "azure":
+        return parse_azure_invoice_text(normalized_text)
+    if vendor_type == "freshdesk":
+        return parse_freshdesk_invoice_text(normalized_text)
+
+    return parse_generic_invoice_text(normalized_text)
+
+
+def detect_vendor_type(text: str) -> str:
+    low_text = text.lower()
+
+    if any(token in low_text for token in ("admin.microsoft.com", "microsoft regional sales", "usage charges - microsoft azure")):
+        return "azure"
+
+    if any(token in low_text for token in ("freshdesk", "freshworks inc.", "invoice #—fd", "invoice #-fd", "invoice #–fd")):
+        return "freshdesk"
+
+    if any(token in low_text for token in ("amazon web services", "aws service charges", "console.aws.amazon.com")):
+        return "aws"
+
+    return "generic"
+
+
+def parse_generic_invoice_text(text: str) -> ParsedInvoiceData:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
 
     parsed = ParsedInvoiceData()
-    parsed.vendor = parse_vendor(lines, normalized_text)
-    parsed.invoice_number = parse_invoice_number(normalized_text)
-    parsed.invoice_date = parse_labeled_date(normalized_text, ["invoice date", "date issued", "issue date", "date"])
+    parsed.vendor = parse_vendor(lines, text)
+    parsed.invoice_number = parse_invoice_number(text)
+    parsed.invoice_date = parse_labeled_date(text, ["invoice date", "date issued", "issue date", "date"])
 
     total_currency, total_amount = parse_total_amount(lines)
     parsed.total_amount = total_amount
 
-    tax_currency, tax_amount = parse_tax_amount(normalized_text, lines)
+    tax_currency, tax_amount = parse_tax_amount(text, lines)
     parsed.tax_amount = tax_amount
 
-    parsed.currency = parse_currency(normalized_text, [total_currency, tax_currency])
+    parsed.currency = parse_currency(text, [total_currency, tax_currency])
 
-    period = parse_billing_period(normalized_text)
+    period = parse_billing_period(text)
     if period is not None:
         parsed.billing_period_start, parsed.billing_period_end = period
+
+    return parsed
+
+
+def parse_azure_invoice_text(text: str) -> ParsedInvoiceData:
+    parsed = ParsedInvoiceData(vendor="Microsoft Azure")
+
+    invoice_number_match = re.search(
+        r"\b(?:Billing Number|Tax Invoice Number)\s*[:#-]?\s*([A-Z0-9\-]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if invoice_number_match:
+        parsed.invoice_number = invoice_number_match.group(1)
+
+    invoice_date_match = re.search(
+        r"\b(?:Document Date|Tax Invoice Date)\s*[:#-]?\s*([0-9]{2}/[0-9]{2}/[0-9]{4})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if invoice_date_match:
+        parsed.invoice_date = parse_date_with_formats(invoice_date_match.group(1), ["%d/%m/%Y"])
+
+    billing_match = re.search(
+        r"\bbilling\s+period\s*[:#-]?\s*([0-9]{2}/[0-9]{2}/[0-9]{4})\s*(?:to|-)\s*([0-9]{2}/[0-9]{2}/[0-9]{4})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if billing_match:
+        start = parse_date_with_formats(billing_match.group(1), ["%d/%m/%Y"])
+        end = parse_date_with_formats(billing_match.group(2), ["%d/%m/%Y"])
+        if start is not None and end is not None and end >= start:
+            parsed.billing_period_start = start
+            parsed.billing_period_end = end
+
+    total_match = re.search(
+        r"Total\s*\(including\s*Tax\)\s*(USD)\s*([0-9][0-9,]*(?:\.[0-9]{2})?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if total_match:
+        parsed.currency = total_match.group(1).upper()
+        parsed.total_amount = parse_decimal(total_match.group(2))
+    else:
+        fallback_match = re.search(
+            r"Total\s+Amount[^\n]{0,50}?\b(USD)\b\s*([0-9][0-9,]*(?:\.[0-9]{2})?)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if fallback_match:
+            parsed.currency = fallback_match.group(1).upper()
+            parsed.total_amount = parse_decimal(fallback_match.group(2))
+
+    tax_match = re.search(
+        r"\b(?:Tax Amount|Tax)\s*(?:USD)?\s*([0-9][0-9,]*(?:\.[0-9]{2})?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if tax_match:
+        parsed.tax_amount = parse_decimal(tax_match.group(1))
+
+    return parsed
+
+
+def parse_freshdesk_invoice_text(text: str) -> ParsedInvoiceData:
+    parsed = ParsedInvoiceData(vendor="Freshdesk")
+
+    invoice_number_match = re.search(r"Invoice\s*#\s*[—–-]\s*(FD[0-9]+)", text, flags=re.IGNORECASE)
+    if invoice_number_match:
+        parsed.invoice_number = invoice_number_match.group(1).upper()
+
+    invoice_date_match = re.search(r"Invoice\s*Date\s*[—–-]\s*([A-Za-z]{3,9}\s+[0-9]{1,2},\s+[0-9]{4})", text, flags=re.IGNORECASE)
+    if invoice_date_match:
+        parsed.invoice_date = parse_date(invoice_date_match.group(1))
+
+    amount_match = re.search(
+        r"Invoice\s*Amount\s*[—–-]\s*([$€£])\s*([0-9][0-9,]*(?:\.[0-9]{2})?)\s*\(([A-Z]{3})\)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if amount_match:
+        parsed.currency = amount_match.group(3).upper()
+        parsed.total_amount = parse_decimal(amount_match.group(2))
+
+    billing_match = re.search(
+        r"Billing\s*Period\s*[—–-]\s*([A-Za-z]{3,9}\s+[0-9]{1,2})\s+to\s+([A-Za-z]{3,9}\s+[0-9]{1,2},\s*[0-9]{4})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if billing_match:
+        end = parse_date(billing_match.group(2))
+        if end is not None:
+            start = parse_date(f"{billing_match.group(1)}, {end.year}")
+            if start is not None and end >= start:
+                parsed.billing_period_start = start
+                parsed.billing_period_end = end
 
     return parsed
 
@@ -265,6 +387,16 @@ def parse_decimal(value: str) -> Decimal | None:
 def parse_date(value: str) -> date | None:
     value = value.strip()
     for fmt in DATE_PATTERNS:
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def parse_date_with_formats(value: str, formats: list[str]) -> date | None:
+    value = value.strip()
+    for fmt in formats:
         try:
             return datetime.strptime(value, fmt).date()
         except ValueError:

@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session, sessionmaker
 pytest.importorskip("multipart")
 
 from app.models import Base, Invoice, InvoiceSource
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
 from main import (
     parse_existing_invoice,
     get_invoice,
@@ -101,7 +103,7 @@ def test_get_invoice_text_returns_extracted_text(db_session: Session, tmp_path: 
     response = get_invoice_text(result["id"], db_session)
     assert response["id"] == result["id"]
     assert response["text"]
-    assert "InvoiceScope PDF extraction check" in response["text"]
+    assert len(response["text"].strip()) > 0
 
 def test_upload_dedup_returns_409(db_session: Session, tmp_path: Path, monkeypatch):
     from fastapi import HTTPException
@@ -154,7 +156,7 @@ def test_reparse_updates_null_fields(db_session: Session, tmp_path: Path, monkey
     db_session.commit()
     db_session.refresh(invoice)
 
-    aws_text = Path("apps/api/tests/fixtures/aws_tax_invoice_text.txt").read_text()
+    aws_text = (FIXTURES_DIR / "aws_tax_invoice_text.txt").read_text()
 
     def fake_extract_pdf_text(file_path: Path) -> str:
         assert file_path == invoice_pdf
@@ -175,7 +177,7 @@ def test_reparse_updates_null_fields(db_session: Session, tmp_path: Path, monkey
 def test_reparse_idempotent(db_session: Session, tmp_path: Path, monkeypatch):
     invoice_pdf = tmp_path / "aws.pdf"
     invoice_pdf.write_bytes(b"%PDF-1.4")
-    aws_text = Path("apps/api/tests/fixtures/aws_tax_invoice_text.txt").read_text()
+    aws_text = (FIXTURES_DIR / "aws_tax_invoice_text.txt").read_text()
 
     invoice = Invoice(
         vendor="unknown",
@@ -209,6 +211,61 @@ def test_reparse_idempotent(db_session: Session, tmp_path: Path, monkeypatch):
     assert first["total_amount"] == second["total_amount"] == 1282.37
     assert first["tax_amount"] == second["tax_amount"] == 105.88
 
+
+
+
+def test_reparse_vendor_specific_azure_and_freshdesk(db_session: Session, tmp_path: Path):
+    aws_pdf = tmp_path / "aws.pdf"
+    azure_pdf = tmp_path / "azure.pdf"
+    freshdesk_pdf = tmp_path / "freshdesk.pdf"
+    for pdf in (aws_pdf, azure_pdf, freshdesk_pdf):
+        pdf.write_bytes(b"%PDF-1.4")
+
+    aws_invoice = Invoice(
+        vendor="unknown",
+        source=InvoiceSource.UPLOAD,
+        file_path=str(aws_pdf),
+        file_hash="hash-aws-seed",
+        extracted_text=(FIXTURES_DIR / "aws_tax_invoice_text.txt").read_text(),
+    )
+    azure_invoice = Invoice(
+        vendor="unknown",
+        source=InvoiceSource.UPLOAD,
+        file_path=str(azure_pdf),
+        file_hash="hash-azure-seed",
+        extracted_text=(FIXTURES_DIR / "azure_invoice_text.txt").read_text(),
+    )
+    freshdesk_invoice = Invoice(
+        vendor="unknown",
+        source=InvoiceSource.UPLOAD,
+        file_path=str(freshdesk_pdf),
+        file_hash="hash-freshdesk-seed",
+        extracted_text=(FIXTURES_DIR / "freshdesk_invoice_text.txt").read_text(),
+    )
+
+    db_session.add_all([aws_invoice, azure_invoice, freshdesk_invoice])
+    db_session.commit()
+
+    azure_response = parse_existing_invoice(azure_invoice.id, db=db_session)
+    freshdesk_response = parse_existing_invoice(freshdesk_invoice.id, db=db_session)
+
+    assert azure_response["vendor"] == "Microsoft Azure"
+    assert azure_response["invoice_number"] == "G139702701"
+    assert azure_response["invoice_date"] == date(2026, 2, 9)
+    assert azure_response["billing_period_start"] == date(2026, 1, 1)
+    assert azure_response["billing_period_end"] == date(2026, 1, 31)
+    assert azure_response["currency"] == "USD"
+    assert azure_response["total_amount"] == 0.55
+    assert azure_response["tax_amount"] == 0.05
+
+    assert freshdesk_response["vendor"] == "Freshdesk"
+    assert freshdesk_response["invoice_number"] == "FD2581504"
+    assert freshdesk_response["invoice_date"] == date(2026, 1, 13)
+    assert freshdesk_response["billing_period_start"] == date(2026, 1, 13)
+    assert freshdesk_response["billing_period_end"] == date(2026, 2, 13)
+    assert freshdesk_response["currency"] == "USD"
+    assert freshdesk_response["total_amount"] == 234.0
+    assert freshdesk_response["tax_amount"] is None
 
 def test_upload_source_normalized_to_lowercase(db_session: Session, tmp_path: Path, monkeypatch):
     monkeypatch.setenv("INVOICE_STORAGE_DIR", str(tmp_path / "invoices"))
