@@ -779,6 +779,7 @@ def render_dashboard(request: Request, months: int, db: Session) -> HTMLResponse
             "request": request,
             "year": year,
             "month": month,
+            "months": months,
             "monthly_report": monthly_report,
             "mom_report": mom_report,
             "anomalies": anomalies.anomalies,

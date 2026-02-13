@@ -51,6 +51,14 @@ After `docker compose up --build`, the API is available at `http://localhost:800
 - Invoice list UI: `http://localhost:8000/ui/invoices`
 - Invoice detail UI: `http://localhost:8000/ui/invoices/{id}`
 
+### Dashboard upload/re-parse workflow
+
+On the dashboard page:
+- Uploading a PDF runs `POST /invoices/upload`, then automatically runs `POST /invoices/{id}/parse`.
+- The page refreshes the monthly, MoM, anomaly, trend, and invoice list tables without reloading.
+- A status message area shows success/error details (including duplicate `409` responses).
+- Each invoice row has a **Re-parse** button that triggers `POST /invoices/{id}/parse` and refreshes the dashboard data.
+
 ## Example curl commands
 
 ```bash

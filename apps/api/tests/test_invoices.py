@@ -110,6 +110,30 @@ def test_get_invoice_text_returns_extracted_text(db_session: Session, tmp_path: 
     assert response["text"]
     assert len(response["text"].strip()) > 0
 
+
+def test_upload_then_parse_happy_path(db_session: Session, tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("INVOICE_STORAGE_DIR", str(tmp_path / "invoices"))
+    aws_text = (FIXTURES_DIR / "aws_tax_invoice_text.txt").read_text()
+    payload = build_pdf_with_text("placeholder")
+    monkeypatch.setattr("main.extract_pdf_text", lambda _: aws_text)
+
+    uploaded = asyncio.run(
+        upload_invoice(
+            file=build_upload_file("aws-invoice.pdf", payload, "application/pdf"),
+            source="upload",
+            vendor=None,
+            db=db_session,
+        )
+    )
+
+    parsed = parse_existing_invoice(uploaded["id"], db=db_session)
+
+    assert parsed["id"] == uploaded["id"]
+    assert parsed["vendor"] == "AWS"
+    assert parsed["invoice_number"] == "SGIN26-10731"
+    assert parsed["total_amount"] == 1282.37
+    assert parsed["tax_amount"] == 105.88
+
 def test_upload_dedup_returns_409(db_session: Session, tmp_path: Path, monkeypatch):
     from fastapi import HTTPException
 
@@ -1079,3 +1103,7 @@ def test_homepage_dashboard_and_upload_form(db_session: Session):
     assert response.context["mom_report"].current.month >= 1
     assert "anomalies" in response.context
     assert "trend" in response.context
+    assert response.context["months"] == 6
+    body = response.body.decode("utf-8")
+    assert 'id="upload-form"' in body
+    assert 'id="invoice-table-body"' in body
