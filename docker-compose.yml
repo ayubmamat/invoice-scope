@@ -20,6 +20,7 @@ services:
       context: ./apps/api
     environment:
       DATABASE_URL: postgresql+psycopg://invoicescope:invoicescope@postgres:5432/invoicescope
+      APP_VERSION: ${APP_VERSION:-2026.1}
     ports:
       - "8000:8000"
     depends_on:

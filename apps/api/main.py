@@ -186,6 +186,10 @@ def get_storage_dir() -> Path:
     return Path(os.getenv("INVOICE_STORAGE_DIR", "/data/invoices"))
 
 
+def get_app_version() -> str:
+    return os.getenv("APP_VERSION", "2026.1")
+
+
 def decimal_to_float(value: Decimal | None) -> float:
     return float(value or 0)
 
@@ -1038,6 +1042,7 @@ def render_dashboard(
             "mom_report": mom_report,
             "anomalies": anomalies.anomalies,
             "trend": trend.months,
+            "app_version": get_app_version(),
         },
     )
 
@@ -1070,7 +1075,11 @@ def invoices_ui(request: Request, db: Session = Depends(get_db)) -> HTMLResponse
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Jinja2 is not installed")
 
     invoices = db.scalars(select(Invoice).order_by(Invoice.created_at.desc(), Invoice.id.desc()).limit(200)).all()
-    return templates.TemplateResponse(request=request, name="invoice_list.html", context={"request": request, "invoices": invoices})
+    return templates.TemplateResponse(
+        request=request,
+        name="invoice_list.html",
+        context={"request": request, "invoices": invoices, "app_version": get_app_version()},
+    )
 
 
 def render_invoice_detail_ui(invoice_id: int, request: Request, db: Session) -> HTMLResponse:
@@ -1095,6 +1104,7 @@ def render_invoice_detail_ui(invoice_id: int, request: Request, db: Session) -> 
             "invoice": invoice,
             "parse_runs": parse_runs,
             "extracted_text": _truncate_text(invoice.extracted_text),
+            "app_version": get_app_version(),
         },
     )
 

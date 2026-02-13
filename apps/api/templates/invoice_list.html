@@ -1,24 +1,53 @@
 <!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>Invoices</title></head>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Invoices</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='dashboard.css') }}?v=portal3">
+  </head>
   <body>
-    <h1>Invoices</h1>
-    <table border="1" cellpadding="6">
-      <tr>
-        <th>Vendor</th><th>Invoice #</th><th>Billing Period</th><th>Currency</th><th>Total</th><th>Amount Due</th><th>Status</th><th>Created At</th>
-      </tr>
-      {% for invoice in invoices %}
-      <tr>
-        <td><a href="/ui/invoices/{{ invoice.id }}">{{ invoice.vendor }}</a></td>
-        <td>{{ invoice.invoice_number or '' }}</td>
-        <td>{{ invoice.billing_period_start or '' }} to {{ invoice.billing_period_end or '' }}</td>
-        <td>{{ invoice.currency or '' }}</td>
-        <td>{{ invoice.total_amount or '' }}</td>
-        <td>{{ invoice.amount_due or '' }}</td>
-        <td>{{ invoice.status.value if invoice.status else '' }}</td>
-        <td>{{ invoice.created_at }}</td>
-      </tr>
-      {% endfor %}
-    </table>
+    <main class="page">
+      <nav class="subnav card" aria-label="Portal navigation">
+        <a class="subnav-link" href="/dashboard">Dashboard</a>
+        <a class="subnav-link subnav-link-active" href="/ui/invoices">Invoice Explorer</a>
+      </nav>
+
+      <header class="hero">
+        <p class="eyebrow">InvoiceScope</p>
+        <h1>Invoices</h1>
+        <p class="subtitle">Browse uploaded invoices and open details for parse history.</p>
+      </header>
+
+      <section class="card">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Vendor</th><th>Invoice #</th><th>Billing Period</th><th>Currency</th><th>Total</th><th>Amount Due</th><th>Status</th><th>Created At</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for invoice in invoices %}
+              <tr>
+                <td><a class="view-link" href="/ui/invoices/{{ invoice.id }}">{{ invoice.vendor }}</a></td>
+                <td>{{ invoice.invoice_number or '' }}</td>
+                <td>{{ invoice.billing_period_start or '' }} to {{ invoice.billing_period_end or '' }}</td>
+                <td>{{ invoice.currency or '' }}</td>
+                <td>{{ invoice.total_amount or '' }}</td>
+                <td>{{ invoice.amount_due or '' }}</td>
+                <td>{{ invoice.status.value if invoice.status else '' }}</td>
+                <td>{{ invoice.created_at }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="8">No invoices uploaded yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer class="app-footer card">Current Version: <strong>{{ app_version }}</strong></footer>
+    </main>
   </body>
 </html>

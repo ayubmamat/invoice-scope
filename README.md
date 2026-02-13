@@ -32,6 +32,17 @@ After `docker compose up --build`, the API is available at `http://localhost:800
 - Invoice list UI: `http://localhost:8000/ui/invoices`
 - Invoice detail UI: `http://localhost:8000/dashboard/invoices/{id}` (also available as `/ui/invoices/{id}`)
 
+## Application version label
+
+The invoice detail page shows an application version label sourced from `APP_VERSION`.
+
+- Default: `2026.1`
+- Override before build/run:
+
+```bash
+APP_VERSION=2026.2 ./scripts/dev-up.sh
+```
+
 ### Dashboard upload/re-parse workflow
 
 On the dashboard page:
