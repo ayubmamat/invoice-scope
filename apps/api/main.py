@@ -3,6 +3,7 @@ from collections.abc import Generator
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from hashlib import sha256
+import logging
 import os
 from typing import Annotated
 from pathlib import Path
@@ -23,13 +24,41 @@ from app.models import Invoice, InvoiceSource, InvoiceStatus
 from app.parsing import extract_pdf_text, parse_invoice_text
 
 BASE_DIR = Path(__file__).resolve().parent
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="InvoiceScope API")
-app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
-try:
-    templates = Jinja2Templates(directory=BASE_DIR / "templates")
-except AssertionError:
-    templates = None
+
+
+def _prepare_directory(path: Path, label: str) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return True
+    except OSError as exc:
+        logger.warning("Could not prepare %s directory at %s: %s", label, path, exc)
+        return False
+
+
+def configure_ui_assets(*, api_dir: Path = BASE_DIR) -> Jinja2Templates | None:
+    static_dir = api_dir / "static"
+    templates_dir = api_dir / "templates"
+
+    if _prepare_directory(static_dir, "static"):
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    else:
+        logger.warning("Static assets will be unavailable because the static directory is not accessible.")
+
+    if not _prepare_directory(templates_dir, "templates"):
+        logger.warning("Template rendering will be unavailable because the templates directory is not accessible.")
+        return None
+
+    try:
+        return Jinja2Templates(directory=str(templates_dir))
+    except AssertionError as exc:
+        logger.warning("Jinja2 templates could not be configured from %s: %s", templates_dir, exc)
+        return None
+
+
+templates = configure_ui_assets()
 
 
 PDF_CONTENT_TYPES = {"application/pdf", "application/x-pdf"}

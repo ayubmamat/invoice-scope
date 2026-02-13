@@ -1138,5 +1138,22 @@ def test_homepage_dashboard_and_upload_form(db_session: Session):
     assert 'id="upload-form"' in body
     assert 'id="invoice-table-body"' in body
     assert 'Re-process existing invoice' in body
-    assert 'This invoice was already uploaded (ID ${duplicate.detail.invoice_id}). You can re-process it to update its data.' in body
+    assert "This invoice was already uploaded (ID ${duplicate.detail.invoice_id}). Use 'Re-process' to re-extract and update." in body
     assert "document.getElementById('message-actions').addEventListener('click'" in body
+
+
+def test_configure_ui_assets_creates_missing_directories(tmp_path: Path):
+    import main as main_module
+
+    api_dir = tmp_path / "apps" / "api"
+    assert not (api_dir / "static").exists()
+    assert not (api_dir / "templates").exists()
+
+    configured = main_module.configure_ui_assets(api_dir=api_dir)
+
+    if main_module.templates is None:
+        assert configured is None
+    else:
+        assert configured is not None
+    assert (api_dir / "static").is_dir()
+    assert (api_dir / "templates").is_dir()
