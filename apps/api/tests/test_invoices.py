@@ -1,9 +1,12 @@
 import asyncio
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 from datetime import date
 from decimal import Decimal
 from io import BytesIO
-from pathlib import Path
-
 import pytest
 from starlette.datastructures import Headers, UploadFile
 from sqlalchemy import create_engine
@@ -11,7 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 pytest.importorskip("multipart")
 
-from app.models import Base, Invoice, InvoiceSource
+from app.models import Base, Invoice, InvoiceParseRun, InvoiceSource, ParseRunStatus
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 from main import (
@@ -164,7 +167,7 @@ def test_parse_validation_marks_needs_review(db_session: Session, tmp_path: Path
     text = "Microsoft Azure invoice\nTotal Amount USD 10.00\nTax Amount USD 20.00"
 
     invoice = Invoice(
-        vendor="unknown",
+        vendor="known-vendor",
         source=InvoiceSource.UPLOAD,
         file_path=str(invoice_pdf),
         file_hash="hash-invalid-amounts",
@@ -174,8 +177,12 @@ def test_parse_validation_marks_needs_review(db_session: Session, tmp_path: Path
     db_session.commit()
 
     parsed = parse_existing_invoice(invoice.id, db=db_session)
-    assert parsed["needs_review"] is True
-    assert any("tax_amount must be less than or equal to total_amount" in err for err in parsed["validation_errors"])
+    assert parsed["vendor"] == "known-vendor"
+    assert parsed["last_parse_run"] is None
+
+    parse_run = db_session.query(InvoiceParseRun).filter(InvoiceParseRun.invoice_id == invoice.id).one()
+    assert parse_run.status == ParseRunStatus.NEEDS_REVIEW
+    assert any("tax_amount must be less than or equal to total_amount" in err for err in parse_run.validation_errors)
 
 
 def test_invoice_detail_endpoint_returns_text_and_metadata(db_session: Session, tmp_path: Path):
@@ -1308,3 +1315,67 @@ def test_homepage_dashboard_requires_year_month_together(db_session: Session):
 
     assert exc.value.status_code == 422
     assert exc.value.detail == "year and month must be provided together"
+
+
+def test_parse_creates_parse_run(db_session: Session, tmp_path: Path):
+    invoice_pdf = tmp_path / "run.pdf"
+    invoice_pdf.write_bytes(b"%PDF-1.4")
+
+    invoice = Invoice(
+        vendor="unknown",
+        source=InvoiceSource.UPLOAD,
+        file_path=str(invoice_pdf),
+        file_hash="hash-parse-run-create",
+        extracted_text=(FIXTURES_DIR / "aws_tax_invoice_text.txt").read_text(),
+    )
+    db_session.add(invoice)
+    db_session.commit()
+
+    parse_existing_invoice(invoice.id, db=db_session)
+
+    runs = db_session.query(InvoiceParseRun).filter(InvoiceParseRun.invoice_id == invoice.id).all()
+    assert len(runs) == 1
+    assert runs[0].parser_kind.value == "rules"
+
+
+def test_successful_parse_run_updates_invoice_current_fields(db_session: Session, tmp_path: Path):
+    invoice_pdf = tmp_path / "success.pdf"
+    invoice_pdf.write_bytes(b"%PDF-1.4")
+
+    invoice = Invoice(
+        vendor="unknown",
+        source=InvoiceSource.UPLOAD,
+        file_path=str(invoice_pdf),
+        file_hash="hash-success-updates",
+        extracted_text=(FIXTURES_DIR / "aws_tax_invoice_text.txt").read_text(),
+    )
+    db_session.add(invoice)
+    db_session.commit()
+
+    response = parse_existing_invoice(invoice.id, db=db_session)
+
+    assert response["vendor"] == "AWS"
+    assert response["last_parse_run"] is not None
+    assert response["last_parse_run"]["status"] == "success"
+
+
+def test_failed_or_review_parse_run_does_not_overwrite_invoice_fields(db_session: Session, tmp_path: Path):
+    invoice_pdf = tmp_path / "needs-review.pdf"
+    invoice_pdf.write_bytes(b"%PDF-1.4")
+
+    invoice = Invoice(
+        vendor="Stable Vendor",
+        invoice_number="INV-ORIGINAL",
+        source=InvoiceSource.UPLOAD,
+        file_path=str(invoice_pdf),
+        file_hash="hash-review-no-overwrite",
+        extracted_text="Microsoft Azure invoice\nTotal Amount USD 10.00\nTax Amount USD 20.00",
+    )
+    db_session.add(invoice)
+    db_session.commit()
+
+    response = parse_existing_invoice(invoice.id, db=db_session)
+
+    assert response["vendor"] == "Stable Vendor"
+    assert response["invoice_number"] == "INV-ORIGINAL"
+    assert response["last_parse_run"] is None
