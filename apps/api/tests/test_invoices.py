@@ -1118,7 +1118,7 @@ def test_homepage_dashboard_and_upload_form(db_session: Session):
     from starlette.requests import Request
     import main as main_module
 
-    request = Request(scope={"type": "http", "method": "GET", "path": "/", "headers": []})
+    request = Request(scope={"type": "http", "method": "GET", "path": "/", "headers": [], "app": app})
 
     if main_module.templates is None:
         with pytest.raises(HTTPException) as exc:
@@ -1157,3 +1157,81 @@ def test_configure_ui_assets_creates_missing_directories(tmp_path: Path):
         assert configured is not None
     assert (api_dir / "static").is_dir()
     assert (api_dir / "templates").is_dir()
+
+
+def test_homepage_dashboard_uses_selected_year_month_and_available_years(db_session: Session):
+    from fastapi import HTTPException
+    from starlette.requests import Request
+    import main as main_module
+
+    db_session.add_all(
+        [
+            Invoice(
+                vendor="AWS",
+                currency="USD",
+                billing_period_start=date(2025, 12, 1),
+                report_year=2025,
+                report_month=12,
+                total_amount=Decimal("120.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/dashboard-2025.pdf",
+                file_hash="dashboard-2025",
+            ),
+            Invoice(
+                vendor="Azure",
+                currency="USD",
+                billing_period_start=date(2026, 1, 1),
+                report_year=2026,
+                report_month=1,
+                total_amount=Decimal("150.00"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/dashboard-2026.pdf",
+                file_hash="dashboard-2026",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": "/dashboard",
+            "query_string": b"year=2025&month=12",
+            "headers": [],
+            "app": app,
+        }
+    )
+
+    if main_module.templates is None:
+        with pytest.raises(HTTPException):
+            home(request=request, months=6, year=2025, month=12, db=db_session)
+        return
+
+    response = home(request=request, months=6, year=2025, month=12, db=db_session)
+    assert response.status_code == 200
+    assert response.context["year"] == 2025
+    assert response.context["month"] == 12
+    assert response.context["available_years"] == [2026, 2025]
+
+    body = response.body.decode("utf-8")
+    assert 'action="/dashboard"' in body
+    assert 'id="year" name="year"' in body
+    assert 'id="month" name="month"' in body
+    assert "Refresh dashboard" in body
+    assert "fetch(`/reports/monthly?year=${reportYear}&month=${reportMonth}`)" in body
+    assert "fetch(`/reports/monthly/mom?year=${reportYear}&month=${reportMonth}`)" in body
+    assert "fetch(`/reports/anomalies?year=${reportYear}&month=${reportMonth}`)" in body
+
+
+def test_homepage_dashboard_requires_year_month_together(db_session: Session):
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    request = Request(scope={"type": "http", "method": "GET", "path": "/dashboard", "headers": [], "app": app})
+
+    with pytest.raises(HTTPException) as exc:
+        home(request=request, months=6, year=2025, month=None, db=db_session)
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail == "year and month must be provided together"

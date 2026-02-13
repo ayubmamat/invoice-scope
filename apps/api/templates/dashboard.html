@@ -8,6 +8,24 @@
   <body>
     <h1>InvoiceScope Dashboard</h1>
     <p>Reporting month: {{ year }}-{{ '%02d'|format(month) }}</p>
+    <form method="get" action="/dashboard">
+      <label for="year">Year:</label>
+      <select id="year" name="year">
+        {% for report_year in available_years %}
+        <option value="{{ report_year }}" {% if report_year == year %}selected{% endif %}>{{ report_year }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="month">Month:</label>
+      <select id="month" name="month">
+        {% for month_value in range(1, 13) %}
+        <option value="{{ month_value }}" {% if month_value == month %}selected{% endif %}>{{ month_value }}</option>
+        {% endfor %}
+      </select>
+
+      <input type="hidden" name="months" value="{{ months }}">
+      <button type="submit">Refresh dashboard</button>
+    </form>
 
     <h2>Upload Invoice PDF</h2>
     <div id="message-area" class="message" role="status" aria-live="polite"></div>

@@ -216,6 +216,19 @@ def current_utc_year_month() -> tuple[int, int]:
     return now.year, now.month
 
 
+def get_available_report_years(db: Session, *, selected_year: int | None = None) -> list[int]:
+    years = db.scalars(
+        select(Invoice.report_year)
+        .where(Invoice.report_year.is_not(None))
+        .distinct()
+        .order_by(Invoice.report_year.desc())
+    ).all()
+    available_years = [year for year in years if year is not None]
+    if selected_year is not None and selected_year not in available_years:
+        available_years.insert(0, selected_year)
+    return available_years
+
+
 def _pct_change(current: Decimal, previous: Decimal | None) -> float | None:
     if previous is None or previous == 0:
         return None
@@ -791,8 +804,23 @@ def _truncate_text(text: str | None, limit: int = 20000) -> str:
     return f"{value[:limit]}\n\n... [truncated {len(value) - limit} chars]"
 
 
-def render_dashboard(request: Request, months: int, db: Session) -> HTMLResponse:
-    year, month = current_utc_year_month()
+def render_dashboard(
+    request: Request,
+    months: int,
+    db: Session,
+    year: int | None = None,
+    month: int | None = None,
+) -> HTMLResponse:
+    if (year is None) != (month is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="year and month must be provided together",
+        )
+
+    if year is None or month is None:
+        year, month = current_utc_year_month()
+
+    available_years = get_available_report_years(db, selected_year=year)
     monthly_report = build_monthly_report(year=year, month=month, db=db)
     mom_report = get_monthly_mom_report(year=year, month=month, db=db)
     anomalies = get_anomalies_report(year=year, month=month, db=db)
@@ -808,6 +836,7 @@ def render_dashboard(request: Request, months: int, db: Session) -> HTMLResponse
             "request": request,
             "year": year,
             "month": month,
+            "available_years": available_years,
             "months": months,
             "monthly_report": monthly_report,
             "mom_report": mom_report,
@@ -818,13 +847,25 @@ def render_dashboard(request: Request, months: int, db: Session) -> HTMLResponse
 
 
 @app.get("/", response_class=HTMLResponse)
-def home(request: Request, months: int = Query(default=6, ge=1, le=24), db: Session = Depends(get_db)) -> HTMLResponse:
-    return render_dashboard(request=request, months=months, db=db)
+def home(
+    request: Request,
+    months: int = Query(default=6, ge=1, le=24),
+    year: Annotated[int | None, Query(ge=1, le=9999)] = None,
+    month: Annotated[int | None, Query(ge=1, le=12)] = None,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    return render_dashboard(request=request, months=months, db=db, year=year, month=month)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-def dashboard(request: Request, months: int = Query(default=6, ge=1, le=24), db: Session = Depends(get_db)) -> HTMLResponse:
-    return render_dashboard(request=request, months=months, db=db)
+def dashboard(
+    request: Request,
+    months: int = Query(default=6, ge=1, le=24),
+    year: Annotated[int | None, Query(ge=1, le=9999)] = None,
+    month: Annotated[int | None, Query(ge=1, le=12)] = None,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    return render_dashboard(request=request, months=months, db=db, year=year, month=month)
 
 
 @app.get("/ui/invoices", response_class=HTMLResponse)
