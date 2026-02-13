@@ -11,6 +11,7 @@
 
     <h2>Upload Invoice PDF</h2>
     <div id="message-area" class="message" role="status" aria-live="polite"></div>
+    <div id="message-actions"></div>
     <form id="upload-form" enctype="multipart/form-data">
       <p>
         <label for="file">PDF File:</label>
@@ -136,10 +137,21 @@
       const reportMonth = {{ month }};
       const trendMonths = {{ months or 6 }};
 
-      function setMessage(message, kind = 'info') {
+      function setMessage(message, kind = 'info', options = {}) {
         const area = document.getElementById('message-area');
+        const actions = document.getElementById('message-actions');
         area.textContent = message;
         area.className = `message ${kind}`;
+        actions.innerHTML = '';
+
+        if (options.reprocessInvoiceId) {
+          const reprocessButton = document.createElement('button');
+          reprocessButton.type = 'button';
+          reprocessButton.id = 'duplicate-reprocess-button';
+          reprocessButton.dataset.id = options.reprocessInvoiceId;
+          reprocessButton.textContent = 'Re-process existing invoice';
+          actions.appendChild(reprocessButton);
+        }
       }
 
       function money(value) {
@@ -229,6 +241,26 @@
         await Promise.all([refreshInvoices(), refreshReports()]);
       }
 
+      async function reprocessInvoice(invoiceId, button, inProgressMessage = 'Re-processing invoice...', successPrefix = 'Re-processed') {
+        button.disabled = true;
+        setMessage(`${inProgressMessage} ${invoiceId}...`, 'info');
+
+        try {
+          const response = await fetch(`/invoices/${invoiceId}/parse`, { method: 'POST' });
+          if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error || 'Re-process failed');
+          }
+          const parsed = await response.json();
+          setMessage(`${successPrefix} invoice ID ${parsed.id} | vendor: ${parsed.vendor || 'unknown'} | total: ${money(parsed.total_amount)}`, 'success');
+          await refreshDashboard();
+        } catch (error) {
+          setMessage(`Error: ${error.message}`, 'error');
+        } finally {
+          button.disabled = false;
+        }
+      }
+
       document.getElementById('upload-form').addEventListener('submit', async event => {
         event.preventDefault();
         const form = event.currentTarget;
@@ -249,7 +281,11 @@
           const response = await fetch('/invoices/upload', { method: 'POST', body: formData });
           if (response.status === 409) {
             const duplicate = await response.json();
-            setMessage(`Duplicate invoice. Existing invoice ID: ${duplicate.detail.invoice_id}.`, 'error');
+            setMessage(
+              `This invoice was already uploaded (ID ${duplicate.detail.invoice_id}). You can re-process it to update its data.`,
+              'info',
+              { reprocessInvoiceId: duplicate.detail.invoice_id }
+            );
             return;
           }
           if (!response.ok) {
@@ -280,23 +316,15 @@
         if (!button) return;
 
         const invoiceId = button.dataset.id;
-        button.disabled = true;
-        setMessage(`Re-analyzing invoice ${invoiceId}...`, 'info');
+        await reprocessInvoice(invoiceId, button, 'Re-analyzing invoice', 'Re-analyzed');
+      });
 
-        try {
-          const response = await fetch(`/invoices/${invoiceId}/parse`, { method: 'POST' });
-          if (!response.ok) {
-            const error = await response.text();
-            throw new Error(error || 'Re-analyze failed');
-          }
-          const parsed = await response.json();
-          setMessage(`Re-analyzed invoice ID ${parsed.id} | vendor: ${parsed.vendor || 'unknown'} | total: ${money(parsed.total_amount)}`, 'success');
-          await refreshDashboard();
-        } catch (error) {
-          setMessage(`Error: ${error.message}`, 'error');
-        } finally {
-          button.disabled = false;
-        }
+      document.getElementById('message-actions').addEventListener('click', async event => {
+        const button = event.target.closest('#duplicate-reprocess-button');
+        if (!button) return;
+
+        const invoiceId = button.dataset.id;
+        await reprocessInvoice(invoiceId, button, 'Re-processing invoice', 'Re-processed');
       });
 
       refreshDashboard().catch(err => setMessage(`Error loading dashboard: ${err.message}`, 'error'));

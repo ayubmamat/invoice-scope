@@ -1137,3 +1137,6 @@ def test_homepage_dashboard_and_upload_form(db_session: Session):
     body = response.body.decode("utf-8")
     assert 'id="upload-form"' in body
     assert 'id="invoice-table-body"' in body
+    assert 'Re-process existing invoice' in body
+    assert 'This invoice was already uploaded (ID ${duplicate.detail.invoice_id}). You can re-process it to update its data.' in body
+    assert "document.getElementById('message-actions').addEventListener('click'" in body
