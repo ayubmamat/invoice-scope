@@ -282,7 +282,7 @@
           if (response.status === 409) {
             const duplicate = await response.json();
             setMessage(
-              `This invoice was already uploaded (ID ${duplicate.detail.invoice_id}). You can re-process it to update its data.`,
+              `This invoice was already uploaded (ID ${duplicate.detail.invoice_id}). Use 'Re-process' to re-extract and update.`,
               'info',
               { reprocessInvoiceId: duplicate.detail.invoice_id }
             );
