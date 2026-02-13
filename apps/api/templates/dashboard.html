@@ -7,8 +7,11 @@
   </head>
   <body>
     <h1>InvoiceScope Dashboard</h1>
-    <p>Reporting month: {{ year }}-{{ '%02d'|format(month) }}</p>
+    <p>Report month: {{ year }}-{{ '%02d'|format(month) }}</p>
     <form method="get" action="/dashboard">
+      <h2>Report month</h2>
+      <p>Reports below are calculated for this month (MoM compares against the previous month).</p>
+
       <label for="year">Year:</label>
       <select id="year" name="year">
         {% for report_year in available_years %}
@@ -51,16 +54,6 @@
       </p>
     </form>
 
-    <h2>Recent Invoices</h2>
-    <table>
-      <thead>
-        <tr><th>ID</th><th>Vendor</th><th>Invoice #</th><th>Currency</th><th>Total</th><th>Created</th><th>Actions</th></tr>
-      </thead>
-      <tbody id="invoice-table-body">
-        <tr><td colspan="7">Loading invoices...</td></tr>
-      </tbody>
-    </table>
-
     <h2>Current Month Report</h2>
     <table>
       <thead>
@@ -92,9 +85,9 @@
         <td>{{ row.vendor }}</td>
         <td>{{ row.currency or 'N/A' }}</td>
         <td>{{ row.total_amount_sum }}</td>
-        <td>{{ row.prev_total_amount_sum if row.prev_total_amount_sum is not none else 'N/A' }}</td>
+        <td>{{ row.prev_total_amount_sum if row.prev_total_amount_sum is not none else '—' }}</td>
         <td>{{ row.delta_total_amount }}</td>
-        <td>{{ row.pct_total_amount_change if row.pct_total_amount_change is not none else 'N/A' }}</td>
+        <td>{{ row.pct_total_amount_change if row.pct_total_amount_change is not none else 'New' }}</td>
       </tr>
       {% else %}
       <tr><td colspan="6">No month-over-month data available.</td></tr>
@@ -150,6 +143,26 @@
       </tbody>
     </table>
 
+    <h2>Invoices in this month</h2>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Vendor</th><th>Invoice #</th><th>Currency</th><th>Total</th><th>Created</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="invoice-month-table-body">
+        <tr><td colspan="7">Loading invoices...</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Recently uploaded invoices (all months)</h3>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Vendor</th><th>Invoice #</th><th>Currency</th><th>Total</th><th>Created</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="invoice-recent-table-body">
+        <tr><td colspan="7">Loading invoices...</td></tr>
+      </tbody>
+    </table>
+
     <script>
       const reportYear = {{ year }};
       const reportMonth = {{ month }};
@@ -158,7 +171,7 @@
       function setMessage(message, kind = 'info', options = {}) {
         const area = document.getElementById('message-area');
         const actions = document.getElementById('message-actions');
-        area.textContent = message;
+        area.textContent = `Last action: ${message}`;
         area.className = `message ${kind}`;
         actions.innerHTML = '';
 
@@ -174,6 +187,35 @@
 
       function money(value) {
         return value === null || value === undefined ? 'N/A' : value;
+      }
+
+      function momPreviousTotal(value) {
+        return value === null || value === undefined ? '—' : money(value);
+      }
+
+      function momPercentChange(value) {
+        return value === null || value === undefined ? 'New' : money(value);
+      }
+
+      function getInvoiceReportDate(invoice) {
+        return invoice.invoice_date || invoice.billing_period_start;
+      }
+
+      function invoiceInReportMonth(invoice) {
+        if (invoice.report_year !== null && invoice.report_month !== null) {
+          return invoice.report_year === reportYear && invoice.report_month === reportMonth;
+        }
+
+        const reportDate = getInvoiceReportDate(invoice);
+        if (!reportDate) {
+          return false;
+        }
+
+        const parsed = new Date(reportDate);
+        if (Number.isNaN(parsed.getTime())) {
+          return false;
+        }
+        return parsed.getUTCFullYear() === reportYear && (parsed.getUTCMonth() + 1) === reportMonth;
       }
 
       function renderRows(targetId, rows, emptyColspan, rowFn, emptyText) {
@@ -207,9 +249,9 @@
             <td>${row.vendor}</td>
             <td>${row.currency || 'N/A'}</td>
             <td>${money(row.total_amount_sum)}</td>
-            <td>${money(row.prev_total_amount_sum)}</td>
+            <td>${momPreviousTotal(row.prev_total_amount_sum)}</td>
             <td>${money(row.delta_total_amount)}</td>
-            <td>${money(row.pct_total_amount_change)}</td>
+            <td>${momPercentChange(row.pct_total_amount_change)}</td>
           </tr>`, 'No month-over-month data available.');
 
         renderRows('anomalies-body', anomalies.anomalies || [], 4, row => {
@@ -235,7 +277,10 @@
 
       async function refreshInvoices() {
         const invoices = await fetch('/invoices').then(r => r.json());
-        renderRows('invoice-table-body', invoices, 7, invoice => `
+        const invoicesInMonth = invoices.filter(invoiceInReportMonth);
+        const recentInvoices = invoices.slice(0, 10);
+
+        const renderInvoiceRow = invoice => `
           <tr>
             <td>${invoice.id}</td>
             <td>${invoice.vendor || 'unknown'}</td>
@@ -252,7 +297,10 @@
                 aria-label="Re-analyze. Re-extracts text from stored PDF and updates the invoice."
               >Re-analyze</button>
             </td>
-          </tr>`, 'No invoices uploaded yet.');
+          </tr>`;
+
+        renderRows('invoice-month-table-body', invoicesInMonth, 7, renderInvoiceRow, 'No invoices in this month.');
+        renderRows('invoice-recent-table-body', recentInvoices, 7, renderInvoiceRow, 'No invoices uploaded yet.');
       }
 
       async function refreshDashboard() {
@@ -329,7 +377,7 @@
         }
       });
 
-      document.getElementById('invoice-table-body').addEventListener('click', async event => {
+      document.body.addEventListener('click', async event => {
         const button = event.target.closest('.reparse-button');
         if (!button) return;
 
