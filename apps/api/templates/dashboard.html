@@ -146,20 +146,20 @@
     <h2>Invoices in this month</h2>
     <table>
       <thead>
-        <tr><th>ID</th><th>Vendor</th><th>Invoice #</th><th>Currency</th><th>Total</th><th>Created</th><th>Actions</th></tr>
+        <tr><th>ID</th><th>Vendor</th><th>Invoice #</th><th>Currency</th><th>Total</th><th>Needs review</th><th>Created</th><th>Actions</th></tr>
       </thead>
       <tbody id="invoice-month-table-body">
-        <tr><td colspan="7">Loading invoices...</td></tr>
+        <tr><td colspan="8">Loading invoices...</td></tr>
       </tbody>
     </table>
 
     <h3>Recently uploaded invoices (all months)</h3>
     <table>
       <thead>
-        <tr><th>ID</th><th>Vendor</th><th>Invoice #</th><th>Currency</th><th>Total</th><th>Created</th><th>Actions</th></tr>
+        <tr><th>ID</th><th>Vendor</th><th>Invoice #</th><th>Currency</th><th>Total</th><th>Needs review</th><th>Created</th><th>Actions</th></tr>
       </thead>
       <tbody id="invoice-recent-table-body">
-        <tr><td colspan="7">Loading invoices...</td></tr>
+        <tr><td colspan="8">Loading invoices...</td></tr>
       </tbody>
     </table>
 
@@ -287,8 +287,10 @@
             <td>${invoice.invoice_number || 'N/A'}</td>
             <td>${invoice.currency || 'N/A'}</td>
             <td>${money(invoice.total_amount)}</td>
+            <td>${invoice.needs_review ? '<span class="warning-label">Needs review</span>' : 'OK'}</td>
             <td>${invoice.created_at || 'N/A'}</td>
             <td>
+              <a class="view-link" href="/dashboard/invoices/${invoice.id}">View</a>
               <button
                 type="button"
                 class="reparse-button"
@@ -297,10 +299,10 @@
                 aria-label="Re-analyze. Re-extracts text from stored PDF and updates the invoice."
               >Re-analyze</button>
             </td>
-          </tr>`;
+        </tr>`;
 
-        renderRows('invoice-month-table-body', invoicesInMonth, 7, renderInvoiceRow, 'No invoices in this month.');
-        renderRows('invoice-recent-table-body', recentInvoices, 7, renderInvoiceRow, 'No invoices uploaded yet.');
+        renderRows('invoice-month-table-body', invoicesInMonth, 8, renderInvoiceRow, 'No invoices in this month.');
+        renderRows('invoice-recent-table-body', recentInvoices, 8, renderInvoiceRow, 'No invoices uploaded yet.');
       }
 
       async function refreshDashboard() {

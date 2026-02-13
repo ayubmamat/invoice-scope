@@ -2,7 +2,7 @@ import enum
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Enum, Numeric, String, Text, event, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, Numeric, String, Text, event, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -27,6 +27,7 @@ class Invoice(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     vendor: Mapped[str] = mapped_column(String(255), nullable=False)
+    vendor_raw: Mapped[str | None] = mapped_column(String(255), nullable=True)
     vendor_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
     invoice_number: Mapped[str | None] = mapped_column(String(255), nullable=True)
     billing_period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -60,6 +61,10 @@ class Invoice(Base):
     file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
     file_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    needs_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    validation_errors: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    parser_version: Mapped[str] = mapped_column(String(32), nullable=False, default="v1", server_default="v1")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

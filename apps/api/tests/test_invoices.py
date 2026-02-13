@@ -16,6 +16,7 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 from main import (
     parse_existing_invoice,
+    get_invoice_detail,
     get_invoice,
     get_invoice_text,
     get_monthly_mom_report,
@@ -135,6 +136,77 @@ def test_upload_then_parse_happy_path(db_session: Session, tmp_path: Path, monke
     assert parsed["invoice_number"] == "SGIN26-10731"
     assert parsed["total_amount"] == 1282.37
     assert parsed["tax_amount"] == 105.88
+
+
+def test_vendor_normalization_and_vendor_raw(db_session: Session, tmp_path: Path, monkeypatch):
+    invoice_pdf = tmp_path / "vendor.pdf"
+    invoice_pdf.write_bytes(b"%PDF-1.4")
+    text = "Invoice\nVendor: Amazon Web Services, Inc\nTotal: USD 10.00"
+
+    invoice = Invoice(
+        vendor="unknown",
+        source=InvoiceSource.UPLOAD,
+        file_path=str(invoice_pdf),
+        file_hash="hash-vendor-normalize",
+        extracted_text=text,
+    )
+    db_session.add(invoice)
+    db_session.commit()
+
+    parsed = parse_existing_invoice(invoice.id, db=db_session)
+    assert parsed["vendor"] == "AWS"
+    assert parsed["vendor_raw"] == "AWS"
+
+
+def test_parse_validation_marks_needs_review(db_session: Session, tmp_path: Path):
+    invoice_pdf = tmp_path / "invalid.pdf"
+    invoice_pdf.write_bytes(b"%PDF-1.4")
+    text = "Microsoft Azure invoice\nTotal Amount USD 10.00\nTax Amount USD 20.00"
+
+    invoice = Invoice(
+        vendor="unknown",
+        source=InvoiceSource.UPLOAD,
+        file_path=str(invoice_pdf),
+        file_hash="hash-invalid-amounts",
+        extracted_text=text,
+    )
+    db_session.add(invoice)
+    db_session.commit()
+
+    parsed = parse_existing_invoice(invoice.id, db=db_session)
+    assert parsed["needs_review"] is True
+    assert any("tax_amount must be less than or equal to total_amount" in err for err in parsed["validation_errors"])
+
+
+def test_invoice_detail_endpoint_returns_text_and_metadata(db_session: Session, tmp_path: Path):
+    invoice_pdf = tmp_path / "detail.pdf"
+    invoice_pdf.write_bytes(b"%PDF-1.4")
+    invoice = Invoice(
+        vendor="AWS",
+        vendor_raw="Amazon Web Services",
+        source=InvoiceSource.UPLOAD,
+        file_path=str(invoice_pdf),
+        file_hash="hash-detail-endpoint",
+        extracted_text="full invoice text",
+        parser_version="v1",
+    )
+    db_session.add(invoice)
+    db_session.commit()
+    db_session.refresh(invoice)
+
+    detail = get_invoice_detail(invoice.id, db_session)
+    assert detail["id"] == invoice.id
+    assert detail["extracted_text"] == "full invoice text"
+    assert detail["metadata"]["parser_version"] == "v1"
+    assert detail["metadata"]["file_hash"] == "hash-detail-endpoint"
+
+
+def test_invoice_detail_endpoint_404(db_session: Session):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        get_invoice_detail(9999, db_session)
+    assert exc.value.status_code == 404
 
 def test_upload_dedup_returns_409(db_session: Session, tmp_path: Path, monkeypatch):
     from fastapi import HTTPException
@@ -1136,7 +1208,8 @@ def test_homepage_dashboard_and_upload_form(db_session: Session):
     assert response.context["months"] == 6
     body = response.body.decode("utf-8")
     assert 'id="upload-form"' in body
-    assert 'id="invoice-table-body"' in body
+    assert 'id="invoice-month-table-body"' in body
+    assert 'id="invoice-recent-table-body"' in body
     assert 'Re-process existing invoice' in body
     assert "This invoice was already uploaded (ID ${duplicate.detail.invoice_id}). Use 'Re-process' to re-extract and update." in body
     assert "document.getElementById('message-actions').addEventListener('click'" in body
