@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
-from app.models import Invoice, InvoiceSource, InvoiceStatus
+from app.models import Invoice, InvoiceParseRun, InvoiceSource, InvoiceStatus, ParseRunStatus, ParserKind
 from app.parsing import extract_pdf_text, parse_invoice_text
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -265,13 +265,17 @@ def build_monthly_report(year: int, month: int, db: Session) -> MonthlyReportRes
             grouped[key] = {"invoice_count": 0, "total_amount_sum": Decimal("0"), "tax_amount_sum": Decimal("0")}
 
         grouped[key]["invoice_count"] += 1
-        grouped[key]["total_amount_sum"] += invoice.total_amount or Decimal("0")
-        grouped[key]["tax_amount_sum"] += invoice.tax_amount or Decimal("0")
+        if invoice.total_amount is not None:
+            grouped[key]["total_amount_sum"] += invoice.total_amount
+        if invoice.tax_amount is not None:
+            grouped[key]["tax_amount_sum"] += invoice.tax_amount
 
         grand = grand_totals[invoice.currency]
         grand["invoice_count"] += 1
-        grand["total_amount_sum"] += invoice.total_amount or Decimal("0")
-        grand["tax_amount_sum"] += invoice.tax_amount or Decimal("0")
+        if invoice.total_amount is not None:
+            grand["total_amount_sum"] += invoice.total_amount
+        if invoice.tax_amount is not None:
+            grand["tax_amount_sum"] += invoice.tax_amount
 
     groups = [
         SpendGroup(
@@ -295,8 +299,32 @@ def build_monthly_report(year: int, month: int, db: Session) -> MonthlyReportRes
     return MonthlyReportResponse(year=year, month=month, groups=groups, grand_totals=grand_total_items)
 
 
-def invoice_to_dict(invoice: Invoice) -> dict:
+def parse_run_to_dict(parse_run: InvoiceParseRun) -> dict:
     return {
+        "id": parse_run.id,
+        "invoice_id": parse_run.invoice_id,
+        "created_at": parse_run.created_at,
+        "parser_version": parse_run.parser_version,
+        "parser_kind": parse_run.parser_kind.value,
+        "model_name": parse_run.model_name,
+        "status": parse_run.status.value,
+        "confidence": float(parse_run.confidence) if parse_run.confidence is not None else None,
+        "vendor_raw": parse_run.vendor_raw,
+        "vendor_canonical": parse_run.vendor_canonical,
+        "invoice_number": parse_run.invoice_number,
+        "invoice_date": parse_run.invoice_date,
+        "billing_period_start": parse_run.billing_period_start,
+        "billing_period_end": parse_run.billing_period_end,
+        "currency": parse_run.currency,
+        "total_amount": float(parse_run.total_amount) if parse_run.total_amount is not None else None,
+        "tax_amount": float(parse_run.tax_amount) if parse_run.tax_amount is not None else None,
+        "validation_errors": parse_run.validation_errors,
+        "debug_info": parse_run.debug_info,
+    }
+
+
+def invoice_to_dict(invoice: Invoice) -> dict:
+    payload = {
         "id": invoice.id,
         "vendor": invoice.vendor,
         "vendor_raw": invoice.vendor_raw,
@@ -321,8 +349,19 @@ def invoice_to_dict(invoice: Invoice) -> dict:
         "validation_errors": invoice.validation_errors,
         "parsed_at": invoice.parsed_at,
         "parser_version": invoice.parser_version,
+        "last_parse_run_id": invoice.last_parse_run_id,
         "created_at": invoice.created_at,
     }
+    if invoice.last_parse_run is None:
+        payload["last_parse_run"] = None
+    else:
+        payload["last_parse_run"] = {
+            "status": invoice.last_parse_run.status.value,
+            "confidence": float(invoice.last_parse_run.confidence) if invoice.last_parse_run.confidence is not None else None,
+            "created_at": invoice.last_parse_run.created_at,
+            "parser_kind": invoice.last_parse_run.parser_kind.value,
+        }
+    return payload
 
 
 def normalize_vendor_name(vendor_value: str | None) -> str:
@@ -380,6 +419,46 @@ def apply_parsed_invoice_fields(invoice: Invoice, parsed, *, parsed_at: datetime
     invoice.needs_review = bool(invoice.validation_errors)
     invoice.parsed_at = parsed_at
     invoice.parser_version = PARSER_VERSION
+
+
+def create_parse_run(
+    *,
+    db: Session,
+    invoice: Invoice,
+    parsed,
+    parser_kind: ParserKind,
+    parser_version: str,
+    model_name: str | None = None,
+    confidence: Decimal | None = None,
+    debug_info: dict | None = None,
+) -> InvoiceParseRun:
+    validation_errors = validate_parsed_invoice(parsed)
+    status = ParseRunStatus.SUCCESS
+    if validation_errors:
+        status = ParseRunStatus.NEEDS_REVIEW
+
+    parse_run = InvoiceParseRun(
+        invoice_id=invoice.id,
+        parser_version=parser_version,
+        parser_kind=parser_kind,
+        model_name=model_name,
+        status=status,
+        confidence=confidence,
+        vendor_raw=parsed.vendor,
+        vendor_canonical=normalize_vendor_name(parsed.vendor),
+        invoice_number=parsed.invoice_number,
+        invoice_date=parsed.invoice_date,
+        billing_period_start=parsed.billing_period_start,
+        billing_period_end=parsed.billing_period_end,
+        currency=parsed.currency,
+        total_amount=parsed.total_amount,
+        tax_amount=parsed.tax_amount,
+        validation_errors=validation_errors or None,
+        debug_info=debug_info,
+    )
+    db.add(parse_run)
+    db.flush()
+    return parse_run
 
 
 def is_pdf_upload(file: UploadFile) -> bool:
@@ -522,6 +601,7 @@ def get_invoice_detail(invoice_id: int, db: Session = Depends(get_db)) -> dict:
         "source": invoice.source.value,
         "file_hash": invoice.file_hash,
     }
+    payload["parse_runs"] = [parse_run_to_dict(parse_run) for parse_run in invoice.parse_runs]
     return payload
 
 
@@ -540,14 +620,54 @@ def parse_existing_invoice(
     if should_extract_text:
         extracted_text = extract_pdf_text(Path(invoice.file_path))
 
-    parsed = parse_invoice_text(extracted_text)
-
     invoice.extracted_text = extracted_text or None
-    apply_parsed_invoice_fields(invoice, parsed, parsed_at=datetime.now(timezone.utc))
+
+    try:
+        parsed = parse_invoice_text(extracted_text)
+    except Exception as exc:
+        parse_run = InvoiceParseRun(
+            invoice_id=invoice.id,
+            parser_version=PARSER_VERSION,
+            parser_kind=ParserKind.RULES,
+            status=ParseRunStatus.FAILED,
+            validation_errors=["parser execution failed"],
+            debug_info={"error": str(exc)},
+        )
+        db.add(parse_run)
+        db.commit()
+        db.refresh(invoice)
+        return invoice_to_dict(invoice)
+
+    parse_run = create_parse_run(
+        db=db,
+        invoice=invoice,
+        parsed=parsed,
+        parser_kind=ParserKind.RULES,
+        parser_version=PARSER_VERSION,
+        debug_info={"force_text": force_text},
+    )
+
+    if parse_run.status == ParseRunStatus.SUCCESS:
+        apply_parsed_invoice_fields(invoice, parsed, parsed_at=datetime.now(timezone.utc))
+        invoice.last_parse_run_id = parse_run.id
 
     db.commit()
     db.refresh(invoice)
     return invoice_to_dict(invoice)
+
+
+@app.get("/invoices/{invoice_id}/parse-runs")
+def list_invoice_parse_runs(invoice_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+
+    parse_runs = db.scalars(
+        select(InvoiceParseRun)
+        .where(InvoiceParseRun.invoice_id == invoice_id)
+        .order_by(InvoiceParseRun.created_at.desc(), InvoiceParseRun.id.desc())
+    ).all()
+    return [parse_run_to_dict(parse_run) for parse_run in parse_runs]
 
 
 @app.get("/reports/monthly", response_model=MonthlyReportResponse)
@@ -766,7 +886,8 @@ def get_vendor_report(db: Session = Depends(get_db)) -> VendorReportResponse:
         if key not in grouped:
             grouped[key] = {"invoice_count": 0, "total_amount_sum": Decimal("0")}
         grouped[key]["invoice_count"] += 1
-        grouped[key]["total_amount_sum"] += invoice.total_amount or Decimal("0")
+        if invoice.total_amount is not None:
+            grouped[key]["total_amount_sum"] += invoice.total_amount
 
     vendors = [
         VendorSpendGroup(
@@ -830,8 +951,10 @@ def get_trend_report(
 
         key = (invoice.report_year, invoice.report_month, invoice.currency)
         grouped[key]["invoice_count"] += 1
-        grouped[key]["total_amount_sum"] += invoice.total_amount or Decimal("0")
-        grouped[key]["tax_amount_sum"] += invoice.tax_amount or Decimal("0")
+        if invoice.total_amount is not None:
+            grouped[key]["total_amount_sum"] += invoice.total_amount
+        if invoice.tax_amount is not None:
+            grouped[key]["tax_amount_sum"] += invoice.tax_amount
         currencies_seen.add(invoice.currency)
 
     if currency is not None:
@@ -958,12 +1081,19 @@ def render_invoice_detail_ui(invoice_id: int, request: Request, db: Session) -> 
     if invoice is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
 
+    parse_runs = db.scalars(
+        select(InvoiceParseRun)
+        .where(InvoiceParseRun.invoice_id == invoice.id)
+        .order_by(InvoiceParseRun.created_at.desc(), InvoiceParseRun.id.desc())
+    ).all()
+
     return templates.TemplateResponse(
         request=request,
         name="invoice_detail.html",
         context={
             "request": request,
             "invoice": invoice,
+            "parse_runs": parse_runs,
             "extracted_text": _truncate_text(invoice.extracted_text),
         },
     )

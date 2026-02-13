@@ -26,12 +26,47 @@
     <h2>Metadata</h2>
     <table>
       <tbody>
+        <tr><th>Current parse status</th><td>{% if invoice.last_parse_run %}<strong>{{ invoice.last_parse_run.status.value }}</strong>{% else %}N/A{% endif %}</td></tr>
         <tr><th>Parsed at</th><td>{{ invoice.parsed_at or 'N/A' }}</td></tr>
         <tr><th>Parser version</th><td>{{ invoice.parser_version }}</td></tr>
         <tr><th>File hash</th><td>{{ invoice.file_hash }}</td></tr>
         <tr><th>Source</th><td>{{ invoice.source.value }}</td></tr>
         <tr><th>Needs review</th><td>{% if invoice.needs_review %}<span class="warning-label">Needs review</span>{% else %}OK{% endif %}</td></tr>
         <tr><th>Validation errors</th><td>{% if invoice.validation_errors %}{{ invoice.validation_errors|join('; ') }}{% else %}None{% endif %}</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Parse history</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Run ID</th>
+          <th>Created</th>
+          <th>Status</th>
+          <th>Parser</th>
+          <th>Version</th>
+          <th>Confidence</th>
+          <th>Vendor</th>
+          <th>Total</th>
+          <th>Tax</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for run in parse_runs %}
+        <tr>
+          <td>{{ run.id }}</td>
+          <td>{{ run.created_at }}</td>
+          <td>{{ run.status.value }}</td>
+          <td>{{ run.parser_kind.value }}</td>
+          <td>{{ run.parser_version }}</td>
+          <td>{{ run.confidence if run.confidence is not none else 'N/A' }}</td>
+          <td>{{ run.vendor_canonical or run.vendor_raw or 'N/A' }}</td>
+          <td>{{ run.total_amount if run.total_amount is not none else 'N/A' }}</td>
+          <td>{{ run.tax_amount if run.tax_amount is not none else 'N/A' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="9">No parse runs yet.</td></tr>
+        {% endfor %}
       </tbody>
     </table>
 
