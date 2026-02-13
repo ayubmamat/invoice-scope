@@ -1134,9 +1134,62 @@ def test_homepage_dashboard_and_upload_form(db_session: Session):
     assert "anomalies" in response.context
     assert "trend" in response.context
     assert response.context["months"] == 6
+    assert response.context["year"] in response.context["available_years"]
+    assert response.context["available_months"] == list(range(1, 13))
     body = response.body.decode("utf-8")
+    assert 'id="year"' in body
+    assert 'id="month"' in body
     assert 'id="upload-form"' in body
     assert 'id="invoice-table-body"' in body
     assert 'Re-process existing invoice' in body
     assert 'This invoice was already uploaded (ID ${duplicate.detail.invoice_id}). You can re-process it to update its data.' in body
     assert "document.getElementById('message-actions').addEventListener('click'" in body
+
+
+def test_dashboard_respects_year_month_query_params(db_session: Session):
+    from fastapi import HTTPException
+    from starlette.requests import Request
+    import main as main_module
+
+    db_session.add_all(
+        [
+            Invoice(
+                vendor="AWS",
+                billing_period_start=date(2024, 12, 1),
+                currency="USD",
+                total_amount=Decimal("100.00"),
+                tax_amount=Decimal("0"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/dashboard-year-a.pdf",
+                file_hash="dashboard-year-a",
+            ),
+            Invoice(
+                vendor="GCP",
+                billing_period_start=date(2025, 1, 1),
+                currency="USD",
+                total_amount=Decimal("200.00"),
+                tax_amount=Decimal("0"),
+                source=InvoiceSource.UPLOAD,
+                file_path="/tmp/dashboard-year-b.pdf",
+                file_hash="dashboard-year-b",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    request = Request(scope={"type": "http", "method": "GET", "path": "/dashboard", "headers": []})
+
+    if main_module.templates is None:
+        with pytest.raises(HTTPException):
+            home(request=request, months=6, year=2024, month=12, db=db_session)
+        return
+
+    response = home(request=request, months=6, year=2024, month=12, db=db_session)
+
+    assert response.context["year"] == 2024
+    assert response.context["month"] == 12
+    assert response.context["available_years"] == [2025, 2024]
+
+    body = response.body.decode("utf-8")
+    assert '<option value="2024" selected>' in body
+    assert '<option value="12" selected>' in body

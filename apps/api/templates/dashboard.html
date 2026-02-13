@@ -7,6 +7,24 @@
   </head>
   <body>
     <h1>InvoiceScope Dashboard</h1>
+    <form method="get" action="{{ request.url.path }}">
+      <label for="year">Year:</label>
+      <select id="year" name="year">
+      {% for option_year in available_years %}
+        <option value="{{ option_year }}" {% if option_year == year %}selected{% endif %}>{{ option_year }}</option>
+      {% endfor %}
+      </select>
+
+      <label for="month">Month:</label>
+      <select id="month" name="month">
+      {% for option_month in available_months %}
+        <option value="{{ option_month }}" {% if option_month == month %}selected{% endif %}>{{ option_month }}</option>
+      {% endfor %}
+      </select>
+
+      <input type="hidden" name="months" value="{{ months or 6 }}">
+      <button type="submit">Refresh</button>
+    </form>
     <p>Reporting month: {{ year }}-{{ '%02d'|format(month) }}</p>
 
     <h2>Upload Invoice PDF</h2>
@@ -133,8 +151,8 @@
     </table>
 
     <script>
-      const reportYear = {{ year }};
-      const reportMonth = {{ month }};
+      const reportYear = Number(document.getElementById('year').value);
+      const reportMonth = Number(document.getElementById('month').value);
       const trendMonths = {{ months or 6 }};
 
       function setMessage(message, kind = 'info', options = {}) {
