@@ -10,7 +10,8 @@
     <p>Reporting month: {{ year }}-{{ '%02d'|format(month) }}</p>
 
     <h2>Upload Invoice PDF</h2>
-    <form action="/invoices/upload" method="post" enctype="multipart/form-data">
+    <div id="message-area" class="message" role="status" aria-live="polite"></div>
+    <form id="upload-form" enctype="multipart/form-data">
       <p>
         <label for="file">PDF File:</label>
         <input id="file" name="file" type="file" accept="application/pdf,.pdf" required>
@@ -27,13 +28,26 @@
         <input id="vendor" name="vendor" type="text" placeholder="e.g. AWS">
       </p>
       <p>
-        <button type="submit">Upload Invoice</button>
+        <button type="submit" id="upload-button">Upload + Parse</button>
       </p>
     </form>
 
+    <h2>Recent Invoices</h2>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Vendor</th><th>Invoice #</th><th>Currency</th><th>Total</th><th>Created</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="invoice-table-body">
+        <tr><td colspan="7">Loading invoices...</td></tr>
+      </tbody>
+    </table>
+
     <h2>Current Month Report</h2>
     <table>
-      <tr><th>Vendor</th><th>Currency</th><th>Invoices</th><th>Total</th><th>Tax</th></tr>
+      <thead>
+        <tr><th>Vendor</th><th>Currency</th><th>Invoices</th><th>Total</th><th>Tax</th></tr>
+      </thead>
+      <tbody id="monthly-report-body">
       {% for row in monthly_report.groups %}
       <tr>
         <td>{{ row.vendor }}</td>
@@ -45,11 +59,15 @@
       {% else %}
       <tr><td colspan="5">No invoice data for this month.</td></tr>
       {% endfor %}
+      </tbody>
     </table>
 
     <h2>Month-over-Month Report</h2>
     <table>
-      <tr><th>Vendor</th><th>Currency</th><th>Current Total</th><th>Previous Total</th><th>Delta</th><th>% Change</th></tr>
+      <thead>
+        <tr><th>Vendor</th><th>Currency</th><th>Current Total</th><th>Previous Total</th><th>Delta</th><th>% Change</th></tr>
+      </thead>
+      <tbody id="mom-report-body">
       {% for row in mom_report.groups %}
       <tr>
         <td>{{ row.vendor }}</td>
@@ -62,11 +80,15 @@
       {% else %}
       <tr><td colspan="6">No month-over-month data available.</td></tr>
       {% endfor %}
+      </tbody>
     </table>
 
     <h2>Anomalies</h2>
     <table>
-      <tr><th>Type</th><th>Vendor</th><th>Currency</th><th>Details</th></tr>
+      <thead>
+        <tr><th>Type</th><th>Vendor</th><th>Currency</th><th>Details</th></tr>
+      </thead>
+      <tbody id="anomalies-body">
       {% for anomaly in anomalies %}
       <tr>
         <td>{{ anomaly.type }}</td>
@@ -85,11 +107,15 @@
       {% else %}
       <tr><td colspan="4">No anomalies detected.</td></tr>
       {% endfor %}
+      </tbody>
     </table>
 
-    <h2>6-Month Trend</h2>
+    <h2>{{ months or 6 }}-Month Trend</h2>
     <table>
-      <tr><th>Year</th><th>Month</th><th>Currency</th><th>Invoices</th><th>Total</th><th>Tax</th></tr>
+      <thead>
+        <tr><th>Year</th><th>Month</th><th>Currency</th><th>Invoices</th><th>Total</th><th>Tax</th></tr>
+      </thead>
+      <tbody id="trend-body">
       {% for point in trend %}
       <tr>
         <td>{{ point.year }}</td>
@@ -102,6 +128,161 @@
       {% else %}
       <tr><td colspan="6">No trend data available.</td></tr>
       {% endfor %}
+      </tbody>
     </table>
+
+    <script>
+      const reportYear = {{ year }};
+      const reportMonth = {{ month }};
+      const trendMonths = {{ months or 6 }};
+
+      function setMessage(message, kind = 'info') {
+        const area = document.getElementById('message-area');
+        area.textContent = message;
+        area.className = `message ${kind}`;
+      }
+
+      function money(value) {
+        return value === null || value === undefined ? 'N/A' : value;
+      }
+
+      function renderRows(targetId, rows, emptyColspan, rowFn, emptyText) {
+        const body = document.getElementById(targetId);
+        if (!rows.length) {
+          body.innerHTML = `<tr><td colspan="${emptyColspan}">${emptyText}</td></tr>`;
+          return;
+        }
+        body.innerHTML = rows.map(rowFn).join('');
+      }
+
+      async function refreshReports() {
+        const [monthly, mom, anomalies, trend] = await Promise.all([
+          fetch(`/reports/monthly?year=${reportYear}&month=${reportMonth}`).then(r => r.json()),
+          fetch(`/reports/monthly/mom?year=${reportYear}&month=${reportMonth}`).then(r => r.json()),
+          fetch(`/reports/anomalies?year=${reportYear}&month=${reportMonth}`).then(r => r.json()),
+          fetch(`/reports/trend?months=${trendMonths}`).then(r => r.json()),
+        ]);
+
+        renderRows('monthly-report-body', monthly.groups || [], 5, row => `
+          <tr>
+            <td>${row.vendor}</td>
+            <td>${row.currency || 'N/A'}</td>
+            <td>${row.invoice_count}</td>
+            <td>${money(row.total_amount_sum)}</td>
+            <td>${money(row.tax_amount_sum)}</td>
+          </tr>`, 'No invoice data for this month.');
+
+        renderRows('mom-report-body', mom.groups || [], 6, row => `
+          <tr>
+            <td>${row.vendor}</td>
+            <td>${row.currency || 'N/A'}</td>
+            <td>${money(row.total_amount_sum)}</td>
+            <td>${money(row.prev_total_amount_sum)}</td>
+            <td>${money(row.delta_total_amount)}</td>
+            <td>${money(row.pct_total_amount_change)}</td>
+          </tr>`, 'No month-over-month data available.');
+
+        renderRows('anomalies-body', anomalies.anomalies || [], 4, row => {
+          if (row.type === 'spend_spike') {
+            return `<tr><td>${row.type}</td><td>${row.vendor || 'N/A'}</td><td>${row.currency || 'N/A'}</td><td>Current=${row.current_total}, Previous=${row.previous_total}, Delta=${row.delta}, Pct=${row.pct_change}</td></tr>`;
+          }
+          if (row.type === 'new_vendor') {
+            return `<tr><td>${row.type}</td><td>${row.vendor || 'N/A'}</td><td>${row.currency || 'N/A'}</td><td>Current=${row.current_total}</td></tr>`;
+          }
+          return `<tr><td>${row.type}</td><td>N/A</td><td>N/A</td><td>Invoice ID=${row.invoice_id}, Issue=${row.issue}</td></tr>`;
+        }, 'No anomalies detected.');
+
+        renderRows('trend-body', trend.months || [], 6, point => `
+          <tr>
+            <td>${point.year}</td>
+            <td>${point.month}</td>
+            <td>${point.currency || 'N/A'}</td>
+            <td>${point.invoice_count}</td>
+            <td>${money(point.total_amount_sum)}</td>
+            <td>${money(point.tax_amount_sum)}</td>
+          </tr>`, 'No trend data available.');
+      }
+
+      async function refreshInvoices() {
+        const invoices = await fetch('/invoices').then(r => r.json());
+        renderRows('invoice-table-body', invoices, 7, invoice => `
+          <tr>
+            <td>${invoice.id}</td>
+            <td>${invoice.vendor || 'unknown'}</td>
+            <td>${invoice.invoice_number || 'N/A'}</td>
+            <td>${invoice.currency || 'N/A'}</td>
+            <td>${money(invoice.total_amount)}</td>
+            <td>${invoice.created_at || 'N/A'}</td>
+            <td><button type="button" class="reparse-button" data-id="${invoice.id}">Re-parse</button></td>
+          </tr>`, 'No invoices uploaded yet.');
+      }
+
+      async function refreshDashboard() {
+        await Promise.all([refreshInvoices(), refreshReports()]);
+      }
+
+      document.getElementById('upload-form').addEventListener('submit', async event => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const uploadButton = document.getElementById('upload-button');
+        uploadButton.disabled = true;
+        setMessage('Uploading invoice...', 'info');
+
+        try {
+          const response = await fetch('/invoices/upload', { method: 'POST', body: new FormData(form) });
+          if (response.status === 409) {
+            const duplicate = await response.json();
+            setMessage(`Duplicate invoice. Existing invoice ID: ${duplicate.detail.invoice_id}.`, 'error');
+            return;
+          }
+          if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error || 'Upload failed');
+          }
+
+          const uploaded = await response.json();
+          const parseResponse = await fetch(`/invoices/${uploaded.id}/parse`, { method: 'POST' });
+          if (!parseResponse.ok) {
+            const parseError = await parseResponse.text();
+            throw new Error(parseError || 'Parse failed');
+          }
+
+          const parsed = await parseResponse.json();
+          setMessage(`Uploaded + parsed invoice ID ${parsed.id} | vendor: ${parsed.vendor || 'unknown'} | total: ${money(parsed.total_amount)}`, 'success');
+          form.reset();
+          await refreshDashboard();
+        } catch (error) {
+          setMessage(`Error: ${error.message}`, 'error');
+        } finally {
+          uploadButton.disabled = false;
+        }
+      });
+
+      document.getElementById('invoice-table-body').addEventListener('click', async event => {
+        const button = event.target.closest('.reparse-button');
+        if (!button) return;
+
+        const invoiceId = button.dataset.id;
+        button.disabled = true;
+        setMessage(`Re-parsing invoice ${invoiceId}...`, 'info');
+
+        try {
+          const response = await fetch(`/invoices/${invoiceId}/parse`, { method: 'POST' });
+          if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error || 'Re-parse failed');
+          }
+          const parsed = await response.json();
+          setMessage(`Re-parsed invoice ID ${parsed.id} | vendor: ${parsed.vendor || 'unknown'} | total: ${money(parsed.total_amount)}`, 'success');
+          await refreshDashboard();
+        } catch (error) {
+          setMessage(`Error: ${error.message}`, 'error');
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      refreshDashboard().catch(err => setMessage(`Error loading dashboard: ${err.message}`, 'error'));
+    </script>
   </body>
 </html>

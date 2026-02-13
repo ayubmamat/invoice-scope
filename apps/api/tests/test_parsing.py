@@ -90,3 +90,38 @@ def test_parse_invoice_text_freshdesk_fixture():
     assert parsed.amount_due == Decimal("0.00")
     assert parsed.status == "PAID"
     assert parsed.tax_amount is None
+
+
+def test_vendor_detection_snippets_aws_azure_freshdesk():
+    aws_text = """
+    Tax Invoice
+    Amazon Web Services, Inc.
+    Invoice Number: AWS-INV-100
+    Invoice Date: 2026-01-01
+    Total Amount Due USD 120.00
+    """
+    azure_text = """
+    Microsoft
+    Billing Summary
+    Tax Invoice Number G123456789
+    Tax Invoice Date 09/02/2026
+    Total (including Tax) USD 20.00
+    Tax 1.00
+    """
+    freshdesk_text = """
+    Freshworks Inc.
+    Invoice #—FD2581504
+    Invoice Date — Jan 13, 2026
+    Invoice Amount — $ 234.00 (USD)
+    Amount Due — $ 234.00 (USD)
+    """
+
+    assert parse_invoice_text(aws_text).vendor == "AWS"
+    assert parse_invoice_text(azure_text).vendor == "Microsoft Azure"
+    assert parse_invoice_text(freshdesk_text).vendor == "Freshdesk"
+
+
+def test_vendor_detection_unknown_fallback():
+    parsed = parse_invoice_text("Invoice\nInvoice Date: 2026-01-01\nTotal Amount: USD 10.00")
+
+    assert parsed.vendor == "unknown"

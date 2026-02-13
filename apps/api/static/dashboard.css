@@ -26,3 +26,30 @@ th {
 form {
   margin-bottom: 20px;
 }
+
+.message {
+  max-width: 1100px;
+  margin: 8px 0 14px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid #cfcfcf;
+  background: #fafafa;
+}
+
+.message.success {
+  color: #0d5f1f;
+  background: #e9f8ee;
+  border-color: #9dd6ab;
+}
+
+.message.error {
+  color: #8a1120;
+  background: #ffeef0;
+  border-color: #f4a7af;
+}
+
+.message.info {
+  color: #184c89;
+  background: #edf5ff;
+  border-color: #b8d2f3;
+}

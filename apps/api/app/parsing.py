@@ -83,14 +83,27 @@ def parse_invoice_text(text: str, filename: str | None = None) -> ParsedInvoiceD
 
 def detect_vendor_type(text: str) -> str:
     low_text = text.lower()
+    header_text = "\n".join(line.strip() for line in text.splitlines()[:12]).lower()
 
-    if any(token in low_text for token in ("admin.microsoft.com", "microsoft regional sales", "usage charges - microsoft azure")):
+    if "microsoft" in low_text and (
+        "billing summary" in low_text
+        or re.search(r"tax\s+invoice\s+number\s*g", low_text) is not None
+        or "admin.microsoft.com" in low_text
+        or "usage charges - microsoft azure" in low_text
+    ):
         return "azure"
 
-    if any(token in low_text for token in ("freshdesk", "freshworks inc.", "invoice #—fd", "invoice #-fd", "invoice #–fd")):
+    if (
+        "freshworks" in low_text or "freshdesk" in low_text
+    ) and re.search(r"invoice\s*#\s*[—–-]\s*fd", text, flags=re.IGNORECASE):
         return "freshdesk"
 
-    if any(token in low_text for token in ("amazon web services", "aws service charges", "console.aws.amazon.com")):
+    if (
+        "amazon web services" in header_text
+        or re.search(r"\baws\b", header_text, flags=re.IGNORECASE) is not None
+        or "aws service charges" in low_text
+        or "console.aws.amazon.com" in low_text
+    ):
         return "aws"
 
     return "generic"
