@@ -5,6 +5,7 @@ from decimal import Decimal
 from hashlib import sha256
 import logging
 import os
+import re
 from typing import Annotated
 from pathlib import Path
 from uuid import uuid4
@@ -14,7 +15,6 @@ from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-import json
 from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -27,6 +27,7 @@ BASE_DIR = Path(__file__).resolve().parent
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="InvoiceScope API")
+PARSER_VERSION = "v1"
 
 
 def _prepare_directory(path: Path, label: str) -> bool:
@@ -298,6 +299,7 @@ def invoice_to_dict(invoice: Invoice) -> dict:
     return {
         "id": invoice.id,
         "vendor": invoice.vendor,
+        "vendor_raw": invoice.vendor_raw,
         "vendor_domain": invoice.vendor_domain,
         "invoice_number": invoice.invoice_number,
         "billing_period_start": invoice.billing_period_start,
@@ -315,8 +317,69 @@ def invoice_to_dict(invoice: Invoice) -> dict:
         "source": invoice.source.value,
         "file_path": invoice.file_path,
         "file_hash": invoice.file_hash,
+        "needs_review": invoice.needs_review,
+        "validation_errors": invoice.validation_errors,
+        "parsed_at": invoice.parsed_at,
+        "parser_version": invoice.parser_version,
         "created_at": invoice.created_at,
     }
+
+
+def normalize_vendor_name(vendor_value: str | None) -> str:
+    value = (vendor_value or "").strip()
+    if not value:
+        return "unknown"
+
+    low = value.lower()
+    if "amazon web services" in low or re.search(r"\baws\b", low):
+        return "AWS"
+    if "microsoft" in low or "azure" in low:
+        return "Microsoft Azure"
+    if "freshworks" in low or "freshdesk" in low:
+        return "Freshdesk"
+    return value
+
+
+def validate_parsed_invoice(parsed) -> list[str]:
+    errors: list[str] = []
+
+    if parsed.currency is not None and re.fullmatch(r"[A-Z]{3}", parsed.currency) is None:
+        errors.append("currency must be a 3-letter uppercase ISO code or null")
+
+    if parsed.total_amount is not None and parsed.total_amount < 0:
+        errors.append("total_amount must be greater than or equal to 0")
+
+    if parsed.tax_amount is not None and parsed.tax_amount < 0:
+        errors.append("tax_amount must be greater than or equal to 0")
+
+    if parsed.total_amount is not None and parsed.tax_amount is not None and parsed.tax_amount > parsed.total_amount:
+        errors.append("tax_amount must be less than or equal to total_amount")
+
+    return errors
+
+
+def apply_parsed_invoice_fields(invoice: Invoice, parsed, *, parsed_at: datetime) -> None:
+    invoice.vendor_raw = parsed.vendor or invoice.vendor_raw
+    invoice.vendor = normalize_vendor_name(parsed.vendor)
+    invoice.invoice_number = parsed.invoice_number
+    invoice.billing_period_start = parsed.billing_period_start
+    invoice.billing_period_end = parsed.billing_period_end
+    invoice.invoice_date = parsed.invoice_date
+    invoice.report_year, invoice.report_month = resolve_report_period(
+        billing_period_start=parsed.billing_period_start,
+        invoice_date=parsed.invoice_date,
+    )
+    invoice.currency = parsed.currency
+    invoice.subtotal_amount = parsed.subtotal_amount
+    invoice.total_amount = parsed.total_amount
+    invoice.tax_amount = parsed.tax_amount
+    invoice.amount_paid = parsed.amount_paid
+    invoice.amount_due = parsed.amount_due
+    invoice.status = InvoiceStatus(parsed.status) if parsed.status is not None else None
+    invoice.validation_errors = validate_parsed_invoice(parsed) or None
+    invoice.needs_review = bool(invoice.validation_errors)
+    invoice.parsed_at = parsed_at
+    invoice.parser_version = PARSER_VERSION
 
 
 def is_pdf_upload(file: UploadFile) -> bool:
@@ -369,7 +432,10 @@ async def upload_invoice(
 
     extracted_text = extract_pdf_text(file_path)
     parsed = parse_invoice_text(extracted_text, filename=file.filename)
-    resolved_vendor = (vendor or "").strip() or parsed.vendor or "unknown"
+    parsed_at = datetime.now(timezone.utc)
+    resolved_vendor_raw = (vendor or "").strip() or parsed.vendor or "unknown"
+    resolved_vendor = normalize_vendor_name(resolved_vendor_raw)
+    validation_errors = validate_parsed_invoice(parsed)
 
     report_year, report_month = resolve_report_period(
         billing_period_start=parsed.billing_period_start,
@@ -378,6 +444,7 @@ async def upload_invoice(
 
     invoice = Invoice(
         vendor=resolved_vendor,
+        vendor_raw=resolved_vendor_raw,
         invoice_number=parsed.invoice_number,
         billing_period_start=parsed.billing_period_start,
         billing_period_end=parsed.billing_period_end,
@@ -395,6 +462,10 @@ async def upload_invoice(
         file_path=str(file_path),
         file_hash=file_hash,
         extracted_text=extracted_text or None,
+        needs_review=bool(validation_errors),
+        validation_errors=validation_errors or None,
+        parsed_at=parsed_at,
+        parser_version=PARSER_VERSION,
     )
 
     db.add(invoice)
@@ -437,6 +508,23 @@ def get_invoice_text(invoice_id: int, db: Session = Depends(get_db)) -> dict[str
     return {"id": invoice.id, "text": (invoice.extracted_text or "")[:5000]}
 
 
+@app.get("/invoices/{invoice_id}/detail")
+def get_invoice_detail(invoice_id: int, db: Session = Depends(get_db)) -> dict:
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+
+    payload = invoice_to_dict(invoice)
+    payload["extracted_text"] = invoice.extracted_text or ""
+    payload["metadata"] = {
+        "parsed_at": invoice.parsed_at,
+        "parser_version": invoice.parser_version,
+        "source": invoice.source.value,
+        "file_hash": invoice.file_hash,
+    }
+    return payload
+
+
 @app.post("/invoices/{invoice_id}/parse")
 def parse_existing_invoice(
     invoice_id: int,
@@ -455,22 +543,7 @@ def parse_existing_invoice(
     parsed = parse_invoice_text(extracted_text)
 
     invoice.extracted_text = extracted_text or None
-    invoice.vendor = parsed.vendor or "unknown"
-    invoice.invoice_number = parsed.invoice_number
-    invoice.billing_period_start = parsed.billing_period_start
-    invoice.billing_period_end = parsed.billing_period_end
-    invoice.invoice_date = parsed.invoice_date
-    invoice.report_year, invoice.report_month = resolve_report_period(
-        billing_period_start=parsed.billing_period_start,
-        invoice_date=parsed.invoice_date,
-    )
-    invoice.currency = parsed.currency
-    invoice.subtotal_amount = parsed.subtotal_amount
-    invoice.total_amount = parsed.total_amount
-    invoice.tax_amount = parsed.tax_amount
-    invoice.amount_paid = parsed.amount_paid
-    invoice.amount_due = parsed.amount_due
-    invoice.status = InvoiceStatus(parsed.status) if parsed.status is not None else None
+    apply_parsed_invoice_fields(invoice, parsed, parsed_at=datetime.now(timezone.utc))
 
     db.commit()
     db.refresh(invoice)
@@ -877,8 +950,7 @@ def invoices_ui(request: Request, db: Session = Depends(get_db)) -> HTMLResponse
     return templates.TemplateResponse(request=request, name="invoice_list.html", context={"request": request, "invoices": invoices})
 
 
-@app.get("/ui/invoices/{invoice_id}", response_class=HTMLResponse)
-def invoice_detail_ui(invoice_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+def render_invoice_detail_ui(invoice_id: int, request: Request, db: Session) -> HTMLResponse:
     if templates is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Jinja2 is not installed")
 
@@ -886,14 +958,22 @@ def invoice_detail_ui(invoice_id: int, request: Request, db: Session = Depends(g
     if invoice is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
 
-    invoice_json = json.dumps(invoice_to_dict(invoice), default=str, indent=2)
     return templates.TemplateResponse(
         request=request,
         name="invoice_detail.html",
         context={
             "request": request,
             "invoice": invoice,
-            "invoice_json": invoice_json,
             "extracted_text": _truncate_text(invoice.extracted_text),
         },
     )
+
+
+@app.get("/ui/invoices/{invoice_id}", response_class=HTMLResponse)
+def invoice_detail_ui(invoice_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    return render_invoice_detail_ui(invoice_id=invoice_id, request=request, db=db)
+
+
+@app.get("/dashboard/invoices/{invoice_id}", response_class=HTMLResponse)
+def dashboard_invoice_detail_ui(invoice_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    return render_invoice_detail_ui(invoice_id=invoice_id, request=request, db=db)
