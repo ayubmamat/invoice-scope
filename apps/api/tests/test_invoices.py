@@ -28,6 +28,8 @@ from main import (
     list_invoices,
     upload_invoice,
     home,
+    app,
+    get_db,
 )
 
 
@@ -161,6 +163,34 @@ def test_upload_dedup_returns_409(db_session: Session, tmp_path: Path, monkeypat
 
     assert exc.value.status_code == 409
     assert exc.value.detail["invoice_id"] == first["id"]
+
+
+def test_upload_endpoint_accepts_multipart_file_from_client(db_session: Session, tmp_path: Path, monkeypatch):
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("INVOICE_STORAGE_DIR", str(tmp_path / "invoices"))
+    monkeypatch.setattr("main.extract_pdf_text", lambda _: "")
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/invoices/upload",
+                data={"source": "upload", "vendor": "Browser Upload"},
+                files={"file": ("browser-upload.pdf", b"%PDF-1.4 client upload", "application/pdf")},
+            )
+
+            assert response.status_code == 201
+            payload = response.json()
+            assert payload["vendor"] == "Browser Upload"
+            assert payload["source"] == "upload"
+            assert payload["id"] is not None
+
+            list_response = client.get("/invoices")
+            assert list_response.status_code == 200
+            assert any(invoice["id"] == payload["id"] for invoice in list_response.json())
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_reparse_updates_null_fields(db_session: Session, tmp_path: Path, monkeypatch):
