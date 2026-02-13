@@ -8,17 +8,28 @@ from typing import Annotated
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+import json
 from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
-from app.models import Invoice, InvoiceSource
+from app.models import Invoice, InvoiceSource, InvoiceStatus
 from app.parsing import extract_pdf_text, parse_invoice_text
 
+BASE_DIR = Path(__file__).resolve().parent
+
 app = FastAPI(title="InvoiceScope API")
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+try:
+    templates = Jinja2Templates(directory=BASE_DIR / "templates")
+except AssertionError:
+    templates = None
 
 
 PDF_CONTENT_TYPES = {"application/pdf", "application/x-pdf"}
@@ -259,8 +270,12 @@ def invoice_to_dict(invoice: Invoice) -> dict:
         "billing_period_end": invoice.billing_period_end,
         "invoice_date": invoice.invoice_date,
         "currency": invoice.currency,
+        "subtotal_amount": float(invoice.subtotal_amount) if invoice.subtotal_amount is not None else None,
         "total_amount": float(invoice.total_amount) if invoice.total_amount is not None else None,
         "tax_amount": float(invoice.tax_amount) if invoice.tax_amount is not None else None,
+        "amount_paid": float(invoice.amount_paid) if invoice.amount_paid is not None else None,
+        "amount_due": float(invoice.amount_due) if invoice.amount_due is not None else None,
+        "status": invoice.status.value if invoice.status is not None else None,
         "source": invoice.source.value,
         "file_path": invoice.file_path,
         "file_hash": invoice.file_hash,
@@ -327,8 +342,12 @@ async def upload_invoice(
         billing_period_end=parsed.billing_period_end,
         invoice_date=parsed.invoice_date,
         currency=parsed.currency,
+        subtotal_amount=parsed.subtotal_amount,
         total_amount=parsed.total_amount,
         tax_amount=parsed.tax_amount,
+        amount_paid=parsed.amount_paid,
+        amount_due=parsed.amount_due,
+        status=InvoiceStatus(parsed.status) if parsed.status is not None else None,
         source=normalized_source,
         file_path=str(file_path),
         file_hash=file_hash,
@@ -399,8 +418,12 @@ def parse_existing_invoice(
     invoice.billing_period_end = parsed.billing_period_end
     invoice.invoice_date = parsed.invoice_date
     invoice.currency = parsed.currency
+    invoice.subtotal_amount = parsed.subtotal_amount
     invoice.total_amount = parsed.total_amount
     invoice.tax_amount = parsed.tax_amount
+    invoice.amount_paid = parsed.amount_paid
+    invoice.amount_due = parsed.amount_due
+    invoice.status = InvoiceStatus(parsed.status) if parsed.status is not None else None
 
     db.commit()
     db.refresh(invoice)
@@ -595,8 +618,11 @@ def seed_dev_data(db: Session = Depends(get_db)) -> dict[str, int | str]:
             billing_period_start=spec["month_start"],
             billing_period_end=spec["month_end"] - timedelta(days=1),
             invoice_date=spec["month_end"] - timedelta(days=1),
+            subtotal_amount=spec["total_amount"] - spec["tax_amount"],
             total_amount=spec["total_amount"],
             tax_amount=spec["tax_amount"],
+            amount_due=spec["total_amount"],
+            status=InvoiceStatus.UNKNOWN,
             source=InvoiceSource.UPLOAD,
             file_path=f"/dev/seed/{spec['file_hash']}.pdf",
             file_hash=spec["file_hash"],
@@ -735,3 +761,65 @@ def get_trend_report(
             )
 
     return TrendReportResponse(months=points)
+
+
+def _truncate_text(text: str | None, limit: int = 20000) -> str:
+    value = text or ""
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}\n\n... [truncated {len(value) - limit} chars]"
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request, months: int = Query(default=6, ge=1, le=24), db: Session = Depends(get_db)) -> HTMLResponse:
+    year, month = current_utc_year_month()
+    monthly_report = build_monthly_report(year=year, month=month, db=db)
+    anomalies = get_anomalies_report(year=year, month=month, db=db)
+    trend = get_trend_report(months=months, anchor_year=year, anchor_month=month, db=db)
+
+    if templates is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Jinja2 is not installed")
+
+    return templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        context={
+            "request": request,
+            "year": year,
+            "month": month,
+            "monthly_report": monthly_report,
+            "anomalies": anomalies.anomalies,
+            "trend": trend.months,
+        },
+    )
+
+
+@app.get("/ui/invoices", response_class=HTMLResponse)
+def invoices_ui(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if templates is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Jinja2 is not installed")
+
+    invoices = db.scalars(select(Invoice).order_by(Invoice.created_at.desc(), Invoice.id.desc()).limit(200)).all()
+    return templates.TemplateResponse(request=request, name="invoice_list.html", context={"request": request, "invoices": invoices})
+
+
+@app.get("/ui/invoices/{invoice_id}", response_class=HTMLResponse)
+def invoice_detail_ui(invoice_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    if templates is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Jinja2 is not installed")
+
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+
+    invoice_json = json.dumps(invoice_to_dict(invoice), default=str, indent=2)
+    return templates.TemplateResponse(
+        request=request,
+        name="invoice_detail.html",
+        context={
+            "request": request,
+            "invoice": invoice,
+            "invoice_json": invoice_json,
+            "extracted_text": _truncate_text(invoice.extracted_text),
+        },
+    )

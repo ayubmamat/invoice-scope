@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8"><title>Invoice {{ invoice.id }}</title></head>
+  <body>
+    <h1>Invoice {{ invoice.id }}</h1>
+    <p><a href="/ui/invoices">Back to list</a></p>
+    <h2>Invoice JSON</h2>
+    <pre>{{ invoice_json }}</pre>
+    <h2>Extracted Text</h2>
+    <pre>{{ extracted_text }}</pre>
+  </body>
+</html>

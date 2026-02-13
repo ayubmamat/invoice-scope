@@ -15,6 +15,13 @@ class InvoiceSource(str, enum.Enum):
     EMAIL = "email"
 
 
+class InvoiceStatus(str, enum.Enum):
+    PAID = "PAID"
+    UNPAID = "UNPAID"
+    PARTIAL = "PARTIAL"
+    UNKNOWN = "UNKNOWN"
+
+
 class Invoice(Base):
     __tablename__ = "invoices"
 
@@ -26,8 +33,19 @@ class Invoice(Base):
     billing_period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
     invoice_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    subtotal_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     total_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     tax_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    amount_paid: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    amount_due: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    status: Mapped[InvoiceStatus | None] = mapped_column(
+        Enum(
+            InvoiceStatus,
+            name="invoice_status",
+            values_callable=lambda enum_cls: [item.value for item in enum_cls],
+        ),
+        nullable=True,
+    )
     source: Mapped[InvoiceSource] = mapped_column(
         Enum(
             InvoiceSource,

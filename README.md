@@ -42,3 +42,20 @@ What it does:
 
 If no path is provided, it defaults to:
 `/Users/ayub/Documents/Code/invoice-scope/docs/Invoice_SGIN26_10731.pdf`.
+
+## API and UI access
+
+After `docker compose up --build`, the API is available at `http://localhost:8000`.
+
+- Dashboard: `http://localhost:8000/dashboard`
+- Invoice list UI: `http://localhost:8000/ui/invoices`
+- Invoice detail UI: `http://localhost:8000/ui/invoices/{id}`
+
+## Example curl commands
+
+```bash
+curl -s http://localhost:8000/health
+curl -s "http://localhost:8000/reports/monthly?year=2026&month=1"
+curl -s "http://localhost:8000/reports/anomalies?year=2026&month=1"
+curl -s "http://localhost:8000/reports/trend?months=6"
+```

@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8"><title>Invoices</title></head>
+  <body>
+    <h1>Invoices</h1>
+    <table border="1" cellpadding="6">
+      <tr>
+        <th>Vendor</th><th>Invoice #</th><th>Billing Period</th><th>Currency</th><th>Total</th><th>Amount Due</th><th>Status</th><th>Created At</th>
+      </tr>
+      {% for invoice in invoices %}
+      <tr>
+        <td><a href="/ui/invoices/{{ invoice.id }}">{{ invoice.vendor }}</a></td>
+        <td>{{ invoice.invoice_number or '' }}</td>
+        <td>{{ invoice.billing_period_start or '' }} to {{ invoice.billing_period_end or '' }}</td>
+        <td>{{ invoice.currency or '' }}</td>
+        <td>{{ invoice.total_amount or '' }}</td>
+        <td>{{ invoice.amount_due or '' }}</td>
+        <td>{{ invoice.status.value if invoice.status else '' }}</td>
+        <td>{{ invoice.created_at }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </body>
+</html>

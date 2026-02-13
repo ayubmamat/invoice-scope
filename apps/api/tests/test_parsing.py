@@ -52,6 +52,8 @@ def test_parse_invoice_text_aws_tax_invoice_regression_fixture():
     assert parsed.billing_period_end == date(2025, 12, 31)
     assert parsed.tax_amount == Decimal("105.88")
     assert parsed.tax_amount != Decimal("1176.49")
+    assert parsed.amount_due == Decimal("1282.37")
+    assert parsed.status == "UNKNOWN"
 
 
 def test_parse_invoice_text_azure_fixture():
@@ -65,8 +67,10 @@ def test_parse_invoice_text_azure_fixture():
     assert parsed.billing_period_start == date(2026, 1, 1)
     assert parsed.billing_period_end == date(2026, 1, 31)
     assert parsed.currency == "USD"
+    assert parsed.subtotal_amount == Decimal("0.50")
     assert parsed.total_amount == Decimal("0.55")
     assert parsed.tax_amount == Decimal("0.05")
+    assert parsed.status == "UNKNOWN"
 
 
 def test_parse_invoice_text_freshdesk_fixture():
@@ -80,5 +84,9 @@ def test_parse_invoice_text_freshdesk_fixture():
     assert parsed.billing_period_start == date(2026, 1, 13)
     assert parsed.billing_period_end == date(2026, 2, 13)
     assert parsed.currency == "USD"
+    assert parsed.subtotal_amount == Decimal("234.00")
     assert parsed.total_amount == Decimal("234.00")
+    assert parsed.amount_paid == Decimal("234.00")
+    assert parsed.amount_due == Decimal("0.00")
+    assert parsed.status == "PAID"
     assert parsed.tax_amount is None

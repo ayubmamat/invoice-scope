@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8"><title>InvoiceScope Dashboard</title></head>
+  <body>
+    <h1>Dashboard ({{ year }}-{{ '%02d'|format(month) }})</h1>
+
+    <h2>Current Month Totals by Currency</h2>
+    <table border="1" cellpadding="6">
+      <tr><th>Currency</th><th>Invoices</th><th>Total</th><th>Tax</th></tr>
+      {% for row in monthly_report.grand_totals %}
+      <tr><td>{{ row.currency or 'N/A' }}</td><td>{{ row.invoice_count }}</td><td>{{ row.total_amount_sum }}</td><td>{{ row.tax_amount_sum }}</td></tr>
+      {% endfor %}
+    </table>
+
+    <h2>Vendor Breakdown</h2>
+    <table border="1" cellpadding="6">
+      <tr><th>Vendor</th><th>Currency</th><th>Invoices</th><th>Total</th><th>Tax</th></tr>
+      {% for row in monthly_report.groups %}
+      <tr><td>{{ row.vendor }}</td><td>{{ row.currency or 'N/A' }}</td><td>{{ row.invoice_count }}</td><td>{{ row.total_amount_sum }}</td><td>{{ row.tax_amount_sum }}</td></tr>
+      {% endfor %}
+    </table>
+
+    <h2>Anomalies</h2>
+    <table border="1" cellpadding="6">
+      <tr><th>Type</th><th>Details</th></tr>
+      {% for anomaly in anomalies %}
+      <tr>
+        <td>{{ anomaly.type }}</td>
+        <td><pre>{{ anomaly }}</pre></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="2">No anomalies</td></tr>
+      {% endfor %}
+    </table>
+
+    <h2>Trend (Last {{ trend|length }} points)</h2>
+    <table border="1" cellpadding="6">
+      <tr><th>Year</th><th>Month</th><th>Currency</th><th>Invoices</th><th>Total</th><th>Tax</th></tr>
+      {% for point in trend %}
+      <tr><td>{{ point.year }}</td><td>{{ point.month }}</td><td>{{ point.currency or 'N/A' }}</td><td>{{ point.invoice_count }}</td><td>{{ point.total_amount_sum }}</td><td>{{ point.tax_amount_sum }}</td></tr>
+      {% endfor %}
+    </table>
+  </body>
+</html>
